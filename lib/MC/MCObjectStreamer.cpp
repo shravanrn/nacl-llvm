@@ -213,7 +213,8 @@ void MCObjectStreamer::EmitInstruction(const MCInst &Inst,
                                        const MCSubtargetInfo &STI) {
 
   // @LOCALMOD-START
-  if (NaClExpander && NaClExpander->expandInst(Inst, *this, STI))
+  MCSectionData *SD = getCurrentSectionData();
+  if (!SD->isBundleLocked() && NaClExpander && NaClExpander->expandInst(Inst, *this, STI))
     return;
 
   if (getAssembler().isBundlingEnabled() &&
@@ -224,7 +225,7 @@ void MCObjectStreamer::EmitInstruction(const MCInst &Inst,
 
   MCStreamer::EmitInstruction(Inst, STI);
 
-  MCSectionData *SD = getCurrentSectionData();
+
   SD->setHasInstructions(true);
 
   // Now that a machine instruction has been assembled into this section, make

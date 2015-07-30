@@ -54,6 +54,7 @@ class MCAsmStreamer final : public MCStreamer {
   // @LOCALMOD: we don't have an MCAssembler object here, so we can't ask it
   // if bundle alignment is enabled. Instead, just track the alignment here.
   unsigned BundleAlignmentEnabled : 1;
+  unsigned BundleLocked : 1;
 
   void EmitRegisterName(int64_t Register);
   void EmitCFIStartProcImpl(MCDwarfFrameInfo &Frame) override;
@@ -1256,7 +1257,8 @@ void MCAsmStreamer::EmitInstruction(const MCInst &Inst, const MCSubtargetInfo &S
          "Cannot emit contents before setting section!");
 
   // @LOCALMOD-START
-  if (NaClExpander && NaClExpander->expandInst(Inst, *this, STI))
+  if (NaClExpander && !BundleLocked &&
+      NaClExpander->expandInst(Inst, *this, STI))
     return;
 
   if (BundleAlignmentEnabled && AsmBackend &&
@@ -1292,11 +1294,13 @@ void MCAsmStreamer::EmitBundleLock(bool AlignToEnd) {
   OS << "\t.bundle_lock";
   if (AlignToEnd)
     OS << " align_to_end";
+  BundleLocked = true; // @LOCALMOD
   EmitEOL();
 }
 
 void MCAsmStreamer::EmitBundleUnlock() {
   OS << "\t.bundle_unlock";
+  BundleLocked = false; // @LOCALMOD
   EmitEOL();
 }
 
