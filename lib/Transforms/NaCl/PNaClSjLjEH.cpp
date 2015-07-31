@@ -157,6 +157,12 @@ namespace {
   };
 }
 
+static cl::opt<bool>
+AllowUndefEhFuncs("allow-undef-pnacl-eh",
+                  cl::desc("Allow required EH symbols, like `__pnacl_eh_resume`, "
+                           "to be undefined"),
+                  cl::init(false), cl::Hidden);
+
 char PNaClSjLjEH::ID = 0;
 INITIALIZE_PASS(PNaClSjLjEH, "pnacl-sjlj-eh",
                 "Lower C++ exception handling to use setjmp()",
@@ -174,8 +180,15 @@ void FuncRewriter::initializeFrame() {
   SetjmpIntrinsic = Intrinsic::getDeclaration(M, Intrinsic::nacl_setjmp);
 
   Value *EHStackTlsVarUncast = M->getGlobalVariable("__pnacl_eh_stack");
-  if (!EHStackTlsVarUncast)
-    report_fatal_error("__pnacl_eh_stack not defined");
+  if (!EHStackTlsVarUncast) {
+    if (!AllowUndefEhFuncs) {
+      report_fatal_error("__pnacl_eh_stack not defined");
+    } else {
+      EHStackTlsVarUncast =
+        M->getOrInsertGlobal("__pnacl_eh_stack",
+                             ExceptionFrameTy->getPointerTo());
+    }
+  }
   EHStackTlsVar = new BitCastInst(
       EHStackTlsVarUncast, ExceptionFrameTy->getPointerTo()->getPointerTo(),
       "pnacl_eh_stack");
@@ -372,8 +385,24 @@ void FuncRewriter::expandInvokeInst(InvokeInst *Invoke) {
 void FuncRewriter::expandResumeInst(ResumeInst *Resume) {
   if (!EHResumeFunc) {
     EHResumeFunc = Func->getParent()->getFunction("__pnacl_eh_resume");
-    if (!EHResumeFunc)
+  }
+  if (!EHResumeFunc) {
+    if (AllowUndefEhFuncs) {
+      // Create a declaration of __pnacl_eh_resume:
+      Module* M = Func->getParent();
+      LLVMContext& C = M->getContext();
+      auto Args = std::vector<Type*>(1, Type::getInt8Ty(C)->getPointerTo());
+      EHResumeFunc =
+        Function::Create(FunctionType::get(Type::getVoidTy(C),
+                                           Args,
+                                           false),
+                         GlobalValue::ExternalLinkage,
+                         "__pnacl_eh_resume");
+      M->getFunctionList().insertAfter(Func, EHResumeFunc);
+      EHResumeFunc->setDoesNotReturn();
+    } else {
       report_fatal_error("__pnacl_eh_resume() not defined");
+    }
   }
 
   // The "resume" instruction gets passed the landingpad's full result
