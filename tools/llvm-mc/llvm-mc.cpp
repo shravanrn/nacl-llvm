@@ -461,10 +461,15 @@ int main(int argc, char **argv) {
     // Set up the AsmStreamer.
     MCCodeEmitter *CE = nullptr;
     MCAsmBackend *MAB = nullptr;
-    if (ShowEncoding || T.isOSNaCl()) { // @LOCALMOD
+    if (ShowEncoding) {
       CE = TheTarget->createMCCodeEmitter(*MCII, *MRI, Ctx);
       MAB = TheTarget->createMCAsmBackend(*MRI, TripleName, MCPU);
     }
+    // @LOCALMOD-START
+    else if (T.isOSNaCl()) {
+      MAB = TheTarget->createMCAsmBackend(*MRI, TripleName, MCPU);
+    }
+    // @LOCALMOD-END
     auto FOut = llvm::make_unique<formatted_raw_ostream>(*OS);
     Str.reset(TheTarget->createAsmStreamer(
         Ctx, std::move(FOut), /*asmverbose*/ true,
