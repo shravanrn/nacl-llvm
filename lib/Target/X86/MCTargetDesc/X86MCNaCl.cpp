@@ -823,6 +823,10 @@ unsigned DemoteRegTo32_(unsigned RegIn) {
 } //namespace
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
+unsigned getReg16(unsigned Reg) {
+  return getX86SubSuperRegister_(Reg, MVT::i16, false);
+}
+
 unsigned getReg32(unsigned Reg) {
   return getX86SubSuperRegister_(Reg, MVT::i32, false);
 }

@@ -25,12 +25,11 @@ namespace llvm {
 class MCInst;
 class MCSubtargetInfo;
 class MCStreamer;
-class SourceMgr;
 
 class MCNaClExpander {
 private:
   SmallVector<unsigned, 2> ScratchRegs;
-  const SourceMgr *SrcMgr;
+  const MCContext &Ctx;
 
 protected:
   std::unique_ptr<MCInstrInfo> InstInfo;
@@ -39,16 +38,30 @@ protected:
 public:
   MCNaClExpander(const MCContext &Ctx, std::unique_ptr<MCRegisterInfo> &&RI,
                  std::unique_ptr<MCInstrInfo> &&II)
-      : InstInfo(std::move(II)), RegInfo(std::move(RI)) {
-    SrcMgr = Ctx.getSourceManager();
-  }
+      : Ctx(Ctx), InstInfo(std::move(II)), RegInfo(std::move(RI)) {}
 
   void Error(const MCInst &Inst, const char msg[]);
 
   void pushScratchReg(unsigned Reg);
   unsigned popScratchReg();
   unsigned getScratchReg(int index);
-  unsigned numScratchRegs();
+  unsigned numScratchRegs() const;
+
+  bool isPseudo(const MCInst &Inst) const;
+
+  bool mayAffectControlFlow(const MCInst &Inst) const;
+  bool isCall(const MCInst &Inst) const;
+  bool isBranch(const MCInst &Inst) const;
+  bool isIndirectBranch(const MCInst &Inst) const;
+  bool isReturn(const MCInst &Inst) const;
+
+  bool mayLoad(const MCInst &Inst) const;
+  bool mayStore(const MCInst &Inst) const;
+
+  bool mayModifyRegister(const MCInst &Inst, unsigned Reg) const;
+  bool explicitlyModifiesRegister(const MCInst &Inst, unsigned Reg) const;
+
+  void replaceDefinitions(MCInst &Inst, unsigned RegOld, unsigned RegNew) const;
 
   virtual ~MCNaClExpander() = default;
   virtual bool expandInst(const MCInst &Inst, MCStreamer &Out,

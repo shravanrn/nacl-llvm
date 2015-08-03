@@ -236,11 +236,23 @@ static MCInstrAnalysis *createX86MCInstrAnalysis(const MCInstrInfo *Info) {
 }
 
 // @LOCALMOD-START
-static void createX86MCNaClExpander(MCStreamer &S,
-                                    std::unique_ptr<MCRegisterInfo> &&RegInfo,
-                                    std::unique_ptr<MCInstrInfo> &&InstInfo) {
-  auto *Exp = new X86::X86MCNaClExpander(S.getContext(), std::move(RegInfo),
-                                         std::move(InstInfo));
+static void
+createX86_32MCNaClExpander(MCStreamer &S,
+                           std::unique_ptr<MCRegisterInfo> &&RegInfo,
+                           std::unique_ptr<MCInstrInfo> &&InstInfo) {
+  auto *Exp =
+      new X86::X86MCNaClExpander(S.getContext(), std::move(RegInfo),
+                                 std::move(InstInfo), false /* Is64Bit */);
+  S.setNaClExpander(Exp);
+}
+
+static void
+createX86_64MCNaClExpander(MCStreamer &S,
+                           std::unique_ptr<MCRegisterInfo> &&RegInfo,
+                           std::unique_ptr<MCInstrInfo> &&InstInfo) {
+  auto *Exp =
+      new X86::X86MCNaClExpander(S.getContext(), std::move(RegInfo),
+                                 std::move(InstInfo), true /* Is64Bit */);
   S.setNaClExpander(Exp);
 }
 // @LOCALMOD-END
@@ -289,6 +301,8 @@ extern "C" void LLVMInitializeX86TargetMC() {
 
   // @LOCALMOD-START
   TargetRegistry::RegisterMCNaClExpander(TheX86_32Target,
-                                         createX86MCNaClExpander);
+                                         createX86_32MCNaClExpander);
+  TargetRegistry::RegisterMCNaClExpander(TheX86_64Target,
+                                         createX86_64MCNaClExpander);
   // @LOCALMOD-END
 }

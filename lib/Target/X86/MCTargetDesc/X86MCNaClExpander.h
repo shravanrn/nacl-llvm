@@ -29,13 +29,14 @@ namespace X86 {
 class X86MCNaClExpander : public MCNaClExpander {
 public:
   X86MCNaClExpander(const MCContext &Ctx, std::unique_ptr<MCRegisterInfo> &&RI,
-                    std::unique_ptr<MCInstrInfo> &&II)
-      : MCNaClExpander(Ctx, std::move(RI), std::move(II)) {}
+                    std::unique_ptr<MCInstrInfo> &&II, bool Is64Bit)
+      : MCNaClExpander(Ctx, std::move(RI), std::move(II)), Is64Bit(Is64Bit) {}
 
   bool expandInst(const MCInst &Inst, MCStreamer &Out,
                   const MCSubtargetInfo &STI) override;
 private:
   bool Guard = false; // recursion guard
+  bool Is64Bit = false;
   SmallVector<MCInst, 4> Prefixes;
 
   void emitPrefixes(MCStreamer &Out, const MCSubtargetInfo &STI);
@@ -46,8 +47,25 @@ private:
   void expandReturn(const MCInst &Inst, MCStreamer &Out,
                     const MCSubtargetInfo &STI);
 
+  void expandLoadStore(const MCInst &Inst, MCStreamer &Out,
+                       const MCSubtargetInfo &STI, bool EmitPrefixes);
+
   void doExpandInst(const MCInst &Inst, MCStreamer &Out,
-                    const MCSubtargetInfo &STI);
+                    const MCSubtargetInfo &STI, bool EmitPrefixes);
+
+  void expandExplicitStackManipulation(unsigned StackReg, const MCInst &Inst,
+                                       MCStreamer &Out,
+                                       const MCSubtargetInfo &STI,
+                                       bool EmitPrefixes);
+
+  void emitSandboxMemOp(MCInst &Inst, int MemIdx, unsigned ScratchReg,
+                        MCStreamer &Out, const MCSubtargetInfo &STI);
+
+  bool emitSandboxMemOps(MCInst &Inst, unsigned ScratchReg, MCStreamer &Out,
+                         const MCSubtargetInfo &STI);
+
+  void emitInstruction(const MCInst &Inst, MCStreamer &Out,
+                       const MCSubtargetInfo &STI, bool EmitPrefixes);
 };
 }
 }
