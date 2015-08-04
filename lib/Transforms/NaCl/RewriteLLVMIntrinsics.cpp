@@ -97,6 +97,24 @@ private:
   uint64_t Value;
   Type *RetType;
 };
+
+/// Rewrite to another, similar, intrinsic.
+class ToAnotherIntrinsic : public RewriteLLVMIntrinsics::IntrinsicRewriter {
+public:
+  ToAnotherIntrinsic(Module &M, Intrinsic::ID From, Intrinsic::ID To)
+      : IntrinsicRewriter(M, From), To(Intrinsic::getDeclaration(&M, To)) {}
+  virtual ~ToAnotherIntrinsic() {}
+
+protected:
+  virtual void doRewriteCall(CallInst *Call) {
+    SmallVector<Value *, 16> Args(Call->arg_operands());
+    CallInst *NewCall = CallInst::Create(To, Args, "", Call);
+    Call->replaceAllUsesWith(NewCall);
+  }
+
+private:
+  Function *To;
+};
 }
 
 char RewriteLLVMIntrinsics::ID = 0;
@@ -116,8 +134,11 @@ bool RewriteLLVMIntrinsics::runOnModule(Module &M) {
   ToNothing PrefetchRewriter(M, Intrinsic::prefetch);
   ToNothing AssumeRewriter(M, Intrinsic::assume);
 
-  return visitUses(FltRoundsRewriter) | visitUses(PrefetchRewriter)
-    | visitUses(AssumeRewriter);
+  ToAnotherIntrinsic DebugTrapRewriter(M, Intrinsic::debugtrap,
+                                       Intrinsic::trap);
+
+  return visitUses(FltRoundsRewriter) | visitUses(PrefetchRewriter) |
+         visitUses(AssumeRewriter) | visitUses(DebugTrapRewriter);
 }
 
 bool RewriteLLVMIntrinsics::visitUses(IntrinsicRewriter &Rewriter) {
