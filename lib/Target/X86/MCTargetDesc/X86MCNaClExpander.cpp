@@ -291,10 +291,10 @@ static void fixupStringOpReg(const MCOperand &Op, MCStreamer &Out,
 
   MCInst Lea;
   Lea.setOpcode(X86::LEA64r);
-  Lea.addOperand(MCOperand::CreateReg(Op.getReg()));
+  Lea.addOperand(MCOperand::CreateReg(getReg64(Op.getReg())));
   Lea.addOperand(MCOperand::CreateReg(X86::R15));
   Lea.addOperand(MCOperand::CreateImm(1));
-  Lea.addOperand(MCOperand::CreateReg(Op.getReg()));
+  Lea.addOperand(MCOperand::CreateReg(getReg64(Op.getReg())));
   Lea.addOperand(MCOperand::CreateImm(0));
   Lea.addOperand(MCOperand::CreateReg(0));
   Out.EmitInstruction(Lea, STI);
