@@ -102,19 +102,21 @@ static bool isLegalBitSize(unsigned Bits) {
   return Bits <= kChunkBits;
 }
 
-static TypePair getExpandedIntTypes(Type *Ty) {
+static TypePair getExpandedIntTypes(const Type *Ty) {
   unsigned BitWidth = Ty->getIntegerBitWidth();
   assert(!isLegalBitSize(BitWidth));
   return {IntegerType::get(Ty->getContext(), kChunkBits),
           IntegerType::get(Ty->getContext(), BitWidth - kChunkBits)};
 }
 
-// Return true if Val is an int which should be converted.
-static bool shouldConvert(const Value *Val) {
-  Type *Ty = Val->getType();
-  if (IntegerType *ITy = dyn_cast<IntegerType>(Ty))
+static bool shouldConvert(const Type *Ty) {
+  if (const IntegerType *ITy = dyn_cast<IntegerType>(Ty))
     return !isLegalBitSize(ITy->getBitWidth());
   return false;
+}
+// Return true if Val is an int which should be converted.
+static bool shouldConvert(const Value *Val) {
+  return shouldConvert(Val->getType());
 }
 
 // Return a pair of constants expanded from C.
@@ -583,6 +585,11 @@ bool ExpandLargeIntegers::runOnFunction(Function &F) {
     if (shouldConvert(&Arg))
       report_fatal_error("Function " + F.getName() +
                          " has illegal integer argument");
+
+  if (shouldConvert(F.getReturnType())) {
+    report_fatal_error("Function " + F.getName() +
+                       " has illegal integer return");
+  }
 
   // TODO(jfb) This should loop to handle nested forward PHIs.
 
