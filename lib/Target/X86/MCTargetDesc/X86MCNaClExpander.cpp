@@ -266,6 +266,68 @@ void X86::X86MCNaClExpander::expandLoadStore(const MCInst &Inst,
     Out.EmitBundleUnlock();
 }
 
+static bool isStringOperation(const MCInst &Inst) {
+  switch (Inst.getOpcode()) {
+  case X86::CMPSB:
+  case X86::CMPSW:
+  case X86::CMPSL:
+  case X86::CMPSQ:
+  case X86::MOVSB:
+  case X86::MOVSW:
+  case X86::MOVSL:
+  case X86::MOVSQ:
+  case X86::STOSB:
+  case X86::STOSW:
+  case X86::STOSL:
+  case X86::STOSQ:
+    return true;
+  }
+  return false;
+}
+
+static void fixupStringOpReg(const MCOperand &Op, MCStreamer &Out,
+                             const MCSubtargetInfo &STI) {
+  clearHighBits(Op, Out, STI);
+
+  MCInst Lea;
+  Lea.setOpcode(X86::LEA64r);
+  Lea.addOperand(MCOperand::CreateReg(Op.getReg()));
+  Lea.addOperand(MCOperand::CreateReg(X86::R15));
+  Lea.addOperand(MCOperand::CreateImm(1));
+  Lea.addOperand(MCOperand::CreateReg(Op.getReg()));
+  Lea.addOperand(MCOperand::CreateImm(0));
+  Lea.addOperand(MCOperand::CreateReg(0));
+  Out.EmitInstruction(Lea, STI);
+}
+
+void X86::X86MCNaClExpander::expandStringOperation(const MCInst &Inst,
+                                                   MCStreamer &Out,
+                                                   const MCSubtargetInfo &STI,
+						   bool EmitPrefixes) {
+  Out.EmitBundleLock(false);
+  switch (Inst.getOpcode()) {
+  case X86::CMPSB:
+  case X86::CMPSW:
+  case X86::CMPSL:
+  case X86::CMPSQ:
+  case X86::MOVSB:
+  case X86::MOVSW:
+  case X86::MOVSL:
+  case X86::MOVSQ:
+    fixupStringOpReg(Inst.getOperand(0), Out, STI);
+    fixupStringOpReg(Inst.getOperand(1), Out, STI);
+    break;
+  case X86::STOSB:
+  case X86::STOSW:
+  case X86::STOSL:
+  case X86::STOSQ:
+    fixupStringOpReg(Inst.getOperand(0), Out, STI);
+    break;
+  }
+  emitInstruction(Inst, Out, STI, EmitPrefixes);
+  Out.EmitBundleUnlock();
+}
+
 // Returns true if Inst is an X86 prefix
 static bool isPrefix(const MCInst &Inst) {
   switch (Inst.getOpcode()) {
@@ -354,7 +416,9 @@ void X86::X86MCNaClExpander::doExpandInst(const MCInst &Inst, MCStreamer &Out,
       return expandReturn(Inst, Out, STI);
     }
   }
-  if (Is64Bit && explicitlyModifiesRegister(Inst, X86::RSP)) {
+  if (Is64Bit && isStringOperation(Inst)) {
+    expandStringOperation(Inst, Out, STI, EmitPrefixes);
+  } else if (Is64Bit && explicitlyModifiesRegister(Inst, X86::RSP)) {
     // Don't handle stack manipulations for now
     emitInstruction(Inst, Out, STI, EmitPrefixes);
   } else if (Is64Bit && explicitlyModifiesRegister(Inst, X86::RBP)) {

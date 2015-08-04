@@ -50,6 +50,9 @@ private:
   void expandLoadStore(const MCInst &Inst, MCStreamer &Out,
                        const MCSubtargetInfo &STI, bool EmitPrefixes);
 
+  void expandStringOperation(const MCInst &Inst, MCStreamer &Out,
+			     const MCSubtargetInfo &STI, bool EmitPrefixes);
+
   void doExpandInst(const MCInst &Inst, MCStreamer &Out,
                     const MCSubtargetInfo &STI, bool EmitPrefixes);
 
