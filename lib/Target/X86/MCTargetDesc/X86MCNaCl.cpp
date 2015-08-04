@@ -823,14 +823,25 @@ unsigned DemoteRegTo32_(unsigned RegIn) {
 } //namespace
 // @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-unsigned getReg16(unsigned Reg) {
-  return getX86SubSuperRegister_(Reg, MVT::i16, false);
-}
-
 unsigned getReg32(unsigned Reg) {
-  return getX86SubSuperRegister_(Reg, MVT::i32, false);
+  switch (Reg) {
+  default:
+    return getX86SubSuperRegister_(Reg, MVT::i32, false);
+  case X86::IP:
+  case X86::EIP:
+    return X86::EIP;
+  case X86::RIP:
+    llvm_unreachable("Trying to demote %rip");
+  }
 }
 
 unsigned getReg64(unsigned Reg) {
-  return getX86SubSuperRegister_(Reg, MVT::i64, false);
+  switch (Reg) {
+  default:
+    return getX86SubSuperRegister_(Reg, MVT::i64, false);
+  case X86::IP:
+  case X86::EIP:
+  case X86::RIP:
+    return X86::RIP;
+  }
 }
