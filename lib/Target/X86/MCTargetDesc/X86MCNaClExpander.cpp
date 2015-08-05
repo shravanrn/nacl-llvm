@@ -19,11 +19,14 @@
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCNaClExpander.h"
 #include "llvm/MC/MCRegisterInfo.h"
+#include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/Support/CommandLine.h"
 
 using namespace llvm;
 
 static const int kBundleSize = 32;
+extern cl::opt<bool> FlagHideSandboxBase;
 
 unsigned getReg32(unsigned Reg);
 unsigned getReg64(unsigned Reg);
@@ -36,91 +39,189 @@ static bool isAbsoluteReg(unsigned Reg) {
           Reg == X86::RIP);
 }
 
-void X86::X86MCNaClExpander::expandIndirectBranch(const MCInst &Inst,
-                                                  MCStreamer &Out,
-                                                  const MCSubtargetInfo &STI) {
-  bool ThroughMemory = false, isCall = false;
-  switch (Inst.getOpcode()) {
-  case X86::CALL16m:
-  case X86::CALL32m:
-    ThroughMemory = true;
-  case X86::CALL16r:
-  case X86::CALL32r:
-    isCall = true;
-    break;
-  case X86::JMP16m:
-  case X86::JMP32m:
-    ThroughMemory = true;
-  case X86::JMP16r:
-  case X86::JMP32r:
-    break;
-  default:
-    llvm_unreachable("invalid indirect jmp/call");
-  }
-
-  MCOperand Target;
-  if (ThroughMemory) {
-    if (numScratchRegs() == 0)
-      Error(Inst, "No scratch registers specified");
-
-    Target = MCOperand::CreateReg(getReg32(getScratchReg(0)));
-
-    MCInst Mov;
-    Mov.setOpcode(X86::MOV32rm);
-    Mov.addOperand(Target);
-    Mov.addOperand(Inst.getOperand(0)); // Base
-    Mov.addOperand(Inst.getOperand(1)); // Scale
-    Mov.addOperand(Inst.getOperand(2)); // Index
-    Mov.addOperand(Inst.getOperand(3)); // Offset
-    Mov.addOperand(Inst.getOperand(4)); // Segment
-    Out.EmitInstruction(Mov, STI);
+static void PushReturnAddress(const llvm::MCSubtargetInfo &STI,
+                              MCContext &Context, MCStreamer &Out,
+                              MCSymbol *RetTarget) {
+  const MCExpr *RetTargetExpr = MCSymbolRefExpr::Create(RetTarget, Context);
+  if (Context.getObjectFileInfo()->getRelocM() == Reloc::PIC_) {
+    // Calculate return_addr
+    // The return address should not be calculated into R11 because if the push
+    // instruction ends up at the start of a bundle, an attacker could arrange
+    // an indirect jump to it, which would push the full jump target
+    // (which itself was calculated into r11) onto the stack.
+    MCInst LEAInst;
+    LEAInst.setOpcode(X86::LEA64_32r);
+    LEAInst.addOperand(MCOperand::CreateReg(X86::R10D));      // DestReg
+    LEAInst.addOperand(MCOperand::CreateReg(X86::RIP));       // BaseReg
+    LEAInst.addOperand(MCOperand::CreateImm(1));              // Scale
+    LEAInst.addOperand(MCOperand::CreateReg(0));              // IndexReg
+    LEAInst.addOperand(MCOperand::CreateExpr(RetTargetExpr)); // Offset
+    LEAInst.addOperand(MCOperand::CreateReg(0));              // SegmentReg
+    Out.EmitInstruction(LEAInst, STI);
+    // push return_addr
+    MCInst PUSHInst;
+    PUSHInst.setOpcode(X86::PUSH64r);
+    PUSHInst.addOperand(MCOperand::CreateReg(X86::R10));
+    Out.EmitInstruction(PUSHInst, STI);
   } else {
-    Target = MCOperand::CreateReg(getReg32(Inst.getOperand(0).getReg()));
+    // push return_addr
+    MCInst PUSHInst;
+    PUSHInst.setOpcode(X86::PUSH64i32);
+    PUSHInst.addOperand(MCOperand::CreateExpr(RetTargetExpr));
+    Out.EmitInstruction(PUSHInst, STI);
   }
+}
 
-  Out.EmitBundleLock(isCall);
+void X86::X86MCNaClExpander::emitSandboxBranchReg(unsigned Reg, MCStreamer &Out,
+                                                  const MCSubtargetInfo &STI) {
 
-  MCInst And;
-  And.setOpcode(X86::AND32ri8);
-  And.addOperand(Target);
-  And.addOperand(Target);
-  And.addOperand(MCOperand::CreateImm(-kBundleSize));
-  Out.EmitInstruction(And, STI);
+  MCInst AndInst;
+  AndInst.setOpcode(X86::AND32ri8);
 
-  MCInst Branch;
-  Branch.setOpcode(isCall ? X86::CALL32r : X86::JMP32r);
-  Branch.addOperand(Target);
-  Out.EmitInstruction(Branch, STI);
+  MCOperand Target32 = MCOperand::CreateReg(getReg32(Reg));
+  AndInst.addOperand(Target32);
+  AndInst.addOperand(Target32);
+  AndInst.addOperand(MCOperand::CreateImm(-kBundleSize));
+  Out.EmitInstruction(AndInst, STI);
 
+  if (Is64Bit) {
+    MCInst Add;
+    Add.setOpcode(X86::ADD64rr);
+
+    MCOperand Target64 = MCOperand::CreateReg(getReg64(Reg));
+    Add.addOperand(Target64);
+    Add.addOperand(Target64);
+    Add.addOperand(MCOperand::CreateReg(X86::R15));
+    Out.EmitInstruction(Add, STI);
+  }
+}
+
+void X86::X86MCNaClExpander::emitIndirectJumpReg(unsigned Reg, MCStreamer &Out,
+                                                 const MCSubtargetInfo &STI) {
+
+  Out.EmitBundleLock(false);
+  emitSandboxBranchReg(Reg, Out, STI);
+
+  MCInst Jmp;
+  Jmp.setOpcode(Is64Bit ? X86::JMP64r : X86::JMP32r);
+
+  MCOperand Target =
+      MCOperand::CreateReg(Is64Bit ? getReg64(Reg) : getReg32(Reg));
+  Jmp.addOperand(Target);
+
+  Out.EmitInstruction(Jmp, STI);
   Out.EmitBundleUnlock();
 }
 
-// Expands the ret instruction.
+void X86::X86MCNaClExpander::emitIndirectCallReg(unsigned Reg, MCStreamer &Out,
+                                                 const MCSubtargetInfo &STI) {
+
+  MCSymbol *RetTarget;
+  MCContext &Context = Out.getContext();
+
+  if (Is64Bit && FlagHideSandboxBase) {
+    // Generate a label for the return address.
+    RetTarget = Context.createTempSymbol("IndirectCallRetAddr", true);
+    PushReturnAddress(STI, Context, Out, RetTarget);
+  }
+
+  Out.EmitBundleLock(!(Is64Bit && FlagHideSandboxBase));
+  emitSandboxBranchReg(Reg, Out, STI);
+
+  MCOperand Target =
+      MCOperand::CreateReg(Is64Bit ? getReg64(Reg) : getReg32(Reg));
+
+  if (Is64Bit && FlagHideSandboxBase) {
+    MCInst Jmp;
+    Jmp.setOpcode(X86::JMP64r);
+    Jmp.addOperand(Target);
+    Out.EmitInstruction(Jmp, STI);
+    Out.EmitBundleUnlock();
+    Out.EmitCodeAlignment(kBundleSize);
+    Out.EmitLabel(RetTarget);
+  } else {
+    MCInst Call;
+    Call.setOpcode(Is64Bit ? X86::CALL64r : X86::CALL32r);
+    Call.addOperand(Target);
+    Out.EmitInstruction(Call, STI);
+    Out.EmitBundleUnlock();
+  }
+}
+
+void X86::X86MCNaClExpander::expandIndirectBranch(const MCInst &Inst,
+                                                  MCStreamer &Out,
+                                                  const MCSubtargetInfo &STI) {
+
+  unsigned Target;
+  if (mayLoad(Inst)) {
+    // indirect jmp/call through memory
+    MCInst Mov;
+    Mov.setOpcode(Is64Bit ? X86::MOV64rm : X86::MOV32rm);
+
+    if (Is64Bit && FlagHideSandboxBase) {
+      Target = X86::R11;
+    } else {
+      if (numScratchRegs() == 0)
+        Error(Inst, "Not enough scratch registers specified");
+      Target = getScratchReg(0);
+    }
+    Mov.addOperand(
+        MCOperand::CreateReg(Is64Bit ? getReg64(Target) : getReg32(Target)));
+    Mov.addOperand(Inst.getOperand(0));
+    Mov.addOperand(Inst.getOperand(1));
+    Mov.addOperand(Inst.getOperand(2));
+    Mov.addOperand(Inst.getOperand(3));
+    Mov.addOperand(Inst.getOperand(4));
+    doExpandInst(Mov, Out, STI, false);
+  } else if (Is64Bit && FlagHideSandboxBase) {
+    Target = X86::R11;
+    unsigned TargetOrig = getReg64(Inst.getOperand(0).getReg());
+    if (TargetOrig != X86::R11) {
+      MCInst Mov;
+      Mov.setOpcode(X86::MOV64rr);
+      Mov.addOperand(MCOperand::CreateReg(X86::R11));
+      Mov.addOperand(MCOperand::CreateReg(TargetOrig));
+      doExpandInst(Mov, Out, STI, false);
+    }
+  } else {
+    Target = Inst.getOperand(0).getReg();
+  }
+
+  if (isCall(Inst))
+    emitIndirectCallReg(Target, Out, STI);
+  else
+    emitIndirectJumpReg(Target, Out, STI);
+}
+
 void X86::X86MCNaClExpander::expandReturn(const MCInst &Inst, MCStreamer &Out,
                                           const MCSubtargetInfo &STI) {
   if (numScratchRegs() == 0)
     Error(Inst, "No scratch registers specified.");
 
-  MCOperand ScratchReg = MCOperand::CreateReg(getReg32(getScratchReg(0)));
+  unsigned ScratchReg = getScratchReg(0);
+
   MCInst Pop;
-  Pop.setOpcode(X86::POP32r);
-  Pop.addOperand(ScratchReg);
+  Pop.setOpcode(Is64Bit ? X86::POP64r : X86::POP32r);
+  Pop.addOperand(MCOperand::CreateReg(Is64Bit ? getReg64(ScratchReg)
+                                              : getReg32(ScratchReg)));
   Out.EmitInstruction(Pop, STI);
 
   if (Inst.getNumOperands() > 0) {
-    assert(Inst.getOpcode() == X86::RETIL);
+    assert(Inst.getOpcode() == X86::RETIL || Inst.getOpcode() == X86::RETIQ);
+
+    MCOperand StackPointer =
+        MCOperand::CreateReg(Is64Bit ? X86::RSP : X86::ESP);
+
     MCInst Add;
-    Add.setOpcode(X86::ADD32ri);
-    Add.addOperand(MCOperand::CreateReg(X86::ESP));
-    Add.addOperand(MCOperand::CreateReg(X86::ESP));
+    Add.setOpcode(Is64Bit ? X86::ADD64ri32 : X86::ADD32ri);
+    Add.addOperand(StackPointer);
+    Add.addOperand(StackPointer);
     Add.addOperand(Inst.getOperand(0));
-    Out.EmitInstruction(Add, STI);
+
+    doExpandInst(Add, Out, STI, false);
   }
 
-  MCInst Jmp;
-  Jmp.setOpcode(X86::JMP32r);
-  Jmp.addOperand(ScratchReg);
-  expandIndirectBranch(Jmp, Out, STI);
+  emitIndirectJumpReg(ScratchReg, Out, STI);
 }
 
 // Emits movl Reg32, Reg32
@@ -507,25 +608,11 @@ void X86::X86MCNaClExpander::doExpandInst(const MCInst &Inst, MCStreamer &Out,
   }
   if (isPrefix(Inst)) {
     return Prefixes.push_back(Inst);
-  }
-  // Don't handle 64 bit control flow expansions for now
-  else if (!Is64Bit) {
-    switch (Inst.getOpcode()) {
-    case X86::CALL16r:
-    case X86::CALL32r:
-    case X86::CALL16m:
-    case X86::CALL32m:
-    case X86::JMP16r:
-    case X86::JMP32r:
-    case X86::JMP16m:
-    case X86::JMP32m:
-      return expandIndirectBranch(Inst, Out, STI);
-    case X86::RETL:
-    case X86::RETIL:
-      return expandReturn(Inst, Out, STI);
-    }
-  }
-  if (Is64Bit && isStringOperation(Inst)) {
+  } else if (isIndirectBranch(Inst) || isCall(Inst)) {
+    expandIndirectBranch(Inst, Out, STI);
+  } else if (isReturn(Inst)) {
+    expandReturn(Inst, Out, STI);
+  } else if (Is64Bit && isStringOperation(Inst)) {
     expandStringOperation(Inst, Out, STI, EmitPrefixes);
   } else if (Is64Bit && explicitlyModifiesRegister(Inst, X86::RSP)) {
     expandExplicitStackManipulation(X86::RSP, Inst, Out, STI, EmitPrefixes);

@@ -69,6 +69,13 @@ private:
 
   void emitInstruction(const MCInst &Inst, MCStreamer &Out,
                        const MCSubtargetInfo &STI, bool EmitPrefixes);
+
+  void emitSandboxBranchReg(unsigned Reg, MCStreamer &Out,
+                            const MCSubtargetInfo &STI);
+  void emitIndirectJumpReg(unsigned Reg, MCStreamer &Out,
+                           const MCSubtargetInfo &STI);
+  void emitIndirectCallReg(unsigned Reg, MCStreamer &Out,
+                           const MCSubtargetInfo &STI);
 };
 }
 }
