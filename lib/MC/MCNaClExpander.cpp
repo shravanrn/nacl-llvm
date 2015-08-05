@@ -84,7 +84,7 @@ bool MCNaClExpander::explicitlyModifiesRegister(const MCInst &Inst,
                                                 unsigned Reg) const {
   const MCInstrDesc &Desc = InstInfo->get(Inst.getOpcode());
   for (int i = 0; i < Desc.NumDefs; ++i) {
-    if (Inst.getOperand(i).isReg() &&
+    if (Desc.OpInfo[i].OperandType == MCOI::OPERAND_REGISTER &&
         RegInfo->isSubRegisterEq(Reg, Inst.getOperand(i).getReg()))
       return true;
   }

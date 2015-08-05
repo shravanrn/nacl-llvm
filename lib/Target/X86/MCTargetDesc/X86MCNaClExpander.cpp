@@ -534,7 +534,7 @@ void X86::X86MCNaClExpander::doExpandInst(const MCInst &Inst, MCStreamer &Out,
   } else if (unsigned StackReg = XCHGStackReg(Inst)) {
     // the above case doesnt catch xchg instruction, so special case
     expandExplicitStackManipulation(StackReg, Inst, Out, STI, EmitPrefixes);
-  } else if (Is64Bit && (mayLoad(Inst) || mayStore(Inst))) {
+  } else if (Is64Bit) {
     return expandLoadStore(Inst, Out, STI, EmitPrefixes);
   } else {
     emitInstruction(Inst, Out, STI, EmitPrefixes);
