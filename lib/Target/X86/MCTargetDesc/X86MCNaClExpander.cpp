@@ -428,21 +428,25 @@ static bool isPrefix(const MCInst &Inst) {
 
 // returns the stack register that is used in xchg instruction
 static unsigned XCHGStackReg(const MCInst &Inst) {
+  unsigned Reg1 = 0, Reg2 = 0;
   switch (Inst.getOpcode()) {
   case X86::XCHG64ar:
-  case X86::XCHG64rr:
   case X86::XCHG64rm:
+    Reg1 = Inst.getOperand(0).getReg();
+    break;
+  case X86::XCHG64rr:
+    Reg1 = Inst.getOperand(0).getReg();
+    Reg2 = Inst.getOperand(2).getReg();
     break;
   default:
     return 0;
   }
-  for (const MCOperand &Op : Inst) {
-    assert(Op.isReg());
-    unsigned Reg = Op.getReg();
-    if (Reg == X86::RSP || Reg == X86::RBP) {
-      return Reg;
-    }
-  }
+  if (Reg1 == X86::RSP || Reg1 == X86::RBP)
+    return Reg1;
+  
+  if (Reg2 == X86::RSP || Reg2 == X86::RBP)
+    return Reg2;
+
   return 0;
 }
 
