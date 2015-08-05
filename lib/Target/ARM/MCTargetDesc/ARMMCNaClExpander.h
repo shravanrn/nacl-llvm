@@ -35,7 +35,14 @@ public:
                   const MCSubtargetInfo &STI) override;
 
 private:
-  bool Guard = false; // recursion Guard
+  bool Guard = false; // recursion guard
+  int SaveCount = 0;
+
+  void expandIndirectBranch(const MCInst &Inst, MCStreamer &Out,
+                            const MCSubtargetInfo &STI, bool isCall);
+
+  void expandCall(const MCInst &Inst, MCStreamer &Out,
+                  const MCSubtargetInfo &STI);
 
   void doExpandInst(const MCInst &Inst, MCStreamer &Out,
                     const MCSubtargetInfo &STI);
