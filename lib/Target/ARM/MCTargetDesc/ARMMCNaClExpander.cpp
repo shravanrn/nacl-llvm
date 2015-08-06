@@ -26,10 +26,10 @@
 using namespace llvm;
 
 const unsigned kBranchTargetMask = 0xC000000F;
-const unsigned kAlwaysPredicate = 14;
 
-static void emitBicMask(unsigned Mask, unsigned Reg, int64_t Pred,
-                        MCStreamer &Out, const MCSubtargetInfo &STI) {
+static void emitBicMask(unsigned Mask, unsigned Reg, ARMCC::CondCodes Pred,
+                        unsigned PredReg, MCStreamer &Out,
+                        const MCSubtargetInfo &STI) {
   MCInst Bic;
   const int32_t EncodedMask = ARM_AM::getSOImmVal(Mask);
   Bic.setOpcode(ARM::BICri);
@@ -42,26 +42,36 @@ static void emitBicMask(unsigned Mask, unsigned Reg, int64_t Pred,
   Out.EmitInstruction(Bic, STI);
 }
 
+static ARMCC::CondCodes
+getPredicate(const MCInst &Inst, const MCInstrInfo &Info, unsigned &PredReg) {
+  const MCInstrDesc &Desc = Info.get(Inst.getOpcode());
+  int PIdx = Desc.findFirstPredOperandIdx();
+  if (PIdx == -1) {
+    PredReg = 0;
+    return ARMCC::AL;
+  }
+
+  PredReg = Inst.getOperand(PIdx + 1).getReg();
+  return static_cast<ARMCC::CondCodes>(Inst.getOperand(PIdx).getImm());
+}
+
 void ARM::ARMMCNaClExpander::expandIndirectBranch(const MCInst &Inst,
                                                   MCStreamer &Out,
                                                   const MCSubtargetInfo &STI,
                                                   bool isCall) {
   assert(Inst.getOperand(0).isReg());
+  unsigned BranchReg = Inst.getOperand(0).getReg();
   // No need to sandbox branch through pc
-  if (Inst.getOperand(0).getReg() == ARM::PC ||
-      Inst.getOperand(0).getReg() == ARM::SP)
+  if (BranchReg == ARM::PC || BranchReg == ARM::SP)
     return Out.EmitInstruction(Inst, STI);
+
+  unsigned PredReg;
+  ARMCC::CondCodes Pred = getPredicate(Inst, *InstInfo, PredReg);
 
   // Otherwise, mask target and branch through
   Out.EmitBundleLock(isCall);
-
-  unsigned Reg = Inst.getOperand(0).getReg();
-  int64_t Pred = Inst.getNumOperands() > 1 ? Inst.getOperand(1).getImm()
-                                           : kAlwaysPredicate;
-  emitBicMask(kBranchTargetMask, Reg, Pred, Out, STI);
-
+  emitBicMask(kBranchTargetMask, BranchReg, Pred, PredReg, Out, STI);
   Out.EmitInstruction(Inst, STI);
-
   Out.EmitBundleUnlock();
 }
 
