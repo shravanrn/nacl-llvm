@@ -21,8 +21,11 @@ foo:
 	blne foo
 //CHECK:    blne	foo
 
-	blxne f0
-//CHECK:    blx	f0
+	blxne r0
+//CHECK:    .bundle_lock align_to_end
+//CHECK-NEXT: 	bicne	r0, r0, #-1073741809
+//CHECK-NEXT: 	blxne	r0
+//CHECK-NEXT: 	.bundle_unlock
 
 	blxne sp
 //CHECK:    blxne	sp

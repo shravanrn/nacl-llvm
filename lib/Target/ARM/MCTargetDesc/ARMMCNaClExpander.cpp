@@ -56,14 +56,29 @@ getPredicate(const MCInst &Inst, const MCInstrInfo &Info, unsigned &PredReg) {
   return static_cast<ARMCC::CondCodes>(Inst.getOperand(PIdx).getImm());
 }
 
+// return a conditional branch through Reg based on the condition codes of Inst
+static MCInst getConditionalBranch(unsigned Reg, const MCInst &Inst,
+                                   const MCInstrInfo &II) {
+  unsigned PredReg;
+  ARMCC::CondCodes Pred = getPredicate(Inst, II, PredReg);
+
+  MCInst BranchInst;
+  BranchInst.setOpcode(ARM::BX_pred);
+  BranchInst.addOperand(MCOperand::CreateReg(Reg));
+  BranchInst.addOperand(MCOperand::CreateImm(Pred));
+  BranchInst.addOperand(MCOperand::CreateReg(PredReg));
+  return BranchInst;
+}
+
 void ARM::ARMMCNaClExpander::expandIndirectBranch(const MCInst &Inst,
                                                   MCStreamer &Out,
                                                   const MCSubtargetInfo &STI,
                                                   bool isCall) {
   assert(Inst.getOperand(0).isReg());
   unsigned BranchReg = Inst.getOperand(0).getReg();
-  // No need to sandbox branch through pc
-  if (BranchReg == ARM::PC || BranchReg == ARM::SP)
+
+  // No need to sandbox branch through sp or pc
+  if (BranchReg == ARM::SP || BranchReg == ARM::PC)
     return Out.EmitInstruction(Inst, STI);
 
   unsigned PredReg;
@@ -87,6 +102,42 @@ void ARM::ARMMCNaClExpander::expandCall(const MCInst &Inst, MCStreamer &Out,
   else {
     Out.EmitInstruction(Inst, STI);
   }
+}
+
+void ARM::ARMMCNaClExpander::expandReturn(const MCInst &Inst, MCStreamer &Out,
+                                          const MCSubtargetInfo &STI) {
+  unsigned Opcode = Inst.getOpcode();
+  if (Opcode == ARM::BX_RET || Opcode == ARM::MOVPCLR) {
+    MCInst BranchInst = getConditionalBranch(ARM::LR, Inst, *InstInfo);
+    return expandIndirectBranch(BranchInst, Out, STI, false);
+  }
+
+  return Out.EmitInstruction(Inst, STI);
+}
+
+void ARM::ARMMCNaClExpander::expandControlFlow(const MCInst &Inst,
+                                               MCStreamer &Out,
+                                               const MCSubtargetInfo &STI) {
+
+  // Optimize if we are just moving into PC
+  if (Inst.getOpcode() == ARM::MOVr && Inst.getOperand(0).getReg() == ARM::PC) {
+    unsigned Src = Inst.getOperand(1).getReg();
+    MCInst BranchInst = getConditionalBranch(Src, Inst, *InstInfo);
+    return expandIndirectBranch(BranchInst, Out, STI, false);
+  }
+
+  if (numScratchRegs() == 0)
+    Error(Inst, "Not enough scratch registers provided");
+
+  unsigned Scratch = getScratchReg(0);
+
+  MCInst SandboxedInst(Inst);
+
+  replaceDefinitions(SandboxedInst, ARM::PC, Scratch);
+  doExpandInst(SandboxedInst, Out, STI);
+
+  MCInst BranchInst = getConditionalBranch(Scratch, Inst, *InstInfo);
+  doExpandInst(BranchInst, Out, STI);
 }
 
 bool ARM::ARMMCNaClExpander::mayModifyStack(const MCInst &Inst) {
@@ -114,7 +165,7 @@ void ARM::ARMMCNaClExpander::expandStackManipulation(
   case ARM::VLDMDIA_UPD:
   case ARM::VLDMDDB_UPD:
   case ARM::VLDMSIA_UPD:
-  case ARM::VLDMSDB_UPD:
+  case ARM::VLDMSDB_UPD: 
   case ARM::STMIA_UPD:
   case ARM::STMIB_UPD:
   case ARM::STMDA_UPD:
@@ -176,10 +227,16 @@ void ARM::ARMMCNaClExpander::doExpandInst(const MCInst &Inst, MCStreamer &Out,
   }
 
   if (SaveCount == 0) {
-    if (isIndirectBranch(Inst)) {
+    if (isReturn(Inst)) {
+      return expandReturn(Inst, Out, STI);
+    } else if (isIndirectBranch(Inst)) {
       return expandIndirectBranch(Inst, Out, STI, false);
     } else if (isCall(Inst)) {
       return expandCall(Inst, Out, STI);
+    } else if (isBranch(Inst)) {
+      return Out.EmitInstruction(Inst, STI);
+    } else if (mayAffectControlFlow(Inst)) {
+      return expandControlFlow(Inst, Out, STI);
     } else if (mayModifyStack(Inst)) {
       return expandStackManipulation(Inst, Out, STI);
     } else {
