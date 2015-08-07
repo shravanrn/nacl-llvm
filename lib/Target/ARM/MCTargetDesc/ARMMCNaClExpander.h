@@ -44,6 +44,11 @@ private:
   void expandCall(const MCInst &Inst, MCStreamer &Out,
                   const MCSubtargetInfo &STI);
 
+  bool mayModifyStack(const MCInst &Inst);
+
+  void expandStackManipulation(const MCInst &Inst, MCStreamer &Out,
+                               const MCSubtargetInfo &STI);
+
   void doExpandInst(const MCInst &Inst, MCStreamer &Out,
                     const MCSubtargetInfo &STI);
 };

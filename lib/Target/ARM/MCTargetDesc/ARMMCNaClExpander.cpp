@@ -26,6 +26,7 @@
 using namespace llvm;
 
 const unsigned kBranchTargetMask = 0xC000000F;
+const unsigned kSandboxMask = 0xC0000000;
 
 static void emitBicMask(unsigned Mask, unsigned Reg, ARMCC::CondCodes Pred,
                         unsigned PredReg, MCStreamer &Out,
@@ -88,6 +89,63 @@ void ARM::ARMMCNaClExpander::expandCall(const MCInst &Inst, MCStreamer &Out,
   }
 }
 
+bool ARM::ARMMCNaClExpander::mayModifyStack(const MCInst &Inst) {
+  // No way to tell where the variable reglist starts, so conservatively
+  // check all registers if the instruction is a variadic load like LDM/VLDM
+  if (isVariadic(Inst) && mayLoad(Inst)) {
+    for (unsigned i = 0, e = Inst.getNumOperands(); i != e; ++i) {
+      if (Inst.getOperand(i).isReg() && Inst.getOperand(i).getReg() == ARM::SP)
+        return true;
+    }
+  }
+  // Otherwise, check if any definitions are SP
+  return mayModifyRegister(Inst, ARM::SP);
+}
+
+void ARM::ARMMCNaClExpander::expandStackManipulation(
+    const MCInst &Inst, MCStreamer &Out, const MCSubtargetInfo &STI) {
+
+  // Dont sandbox push/pop
+  switch (Inst.getOpcode()) {
+  case ARM::LDMIA_UPD:
+  case ARM::LDMIB_UPD:
+  case ARM::LDMDA_UPD:
+  case ARM::LDMDB_UPD:
+  case ARM::VLDMDIA_UPD:
+  case ARM::VLDMDDB_UPD:
+  case ARM::VLDMSIA_UPD:
+  case ARM::VLDMSDB_UPD:
+  case ARM::STMIA_UPD:
+  case ARM::STMIB_UPD:
+  case ARM::STMDA_UPD:
+  case ARM::STMDB_UPD:
+  case ARM::VSTMDIA_UPD:
+  case ARM::VSTMDDB_UPD:
+  case ARM::VSTMSIA_UPD:
+  case ARM::VSTMSDB_UPD:
+  case ARM::LDR_PRE_IMM:
+  case ARM::STR_PRE_IMM:
+    if (Inst.getOperand(0).getReg() == ARM::SP)
+      return Out.EmitInstruction(Inst, STI);
+    break;
+  case ARM::LDR_POST_IMM:
+  case ARM::STR_POST_IMM:
+    if (Inst.getOperand(1).getReg() == ARM::SP)
+      return Out.EmitInstruction(Inst, STI);
+    break;
+  default:
+    break;
+  }
+
+  unsigned PredReg;
+  ARMCC::CondCodes Pred = getPredicate(Inst, *InstInfo, PredReg);
+
+  Out.EmitBundleLock(false);
+  Out.EmitInstruction(Inst, STI);
+  emitBicMask(kSandboxMask, ARM::SP, Pred, PredReg, Out, STI);
+  Out.EmitBundleUnlock();
+}
+
 void ARM::ARMMCNaClExpander::doExpandInst(const MCInst &Inst, MCStreamer &Out,
                                           const MCSubtargetInfo &STI) {
   // This logic is to remain compatible with the existing pseudo instruction
@@ -122,6 +180,8 @@ void ARM::ARMMCNaClExpander::doExpandInst(const MCInst &Inst, MCStreamer &Out,
       return expandIndirectBranch(Inst, Out, STI, false);
     } else if (isCall(Inst)) {
       return expandCall(Inst, Out, STI);
+    } else if (mayModifyStack(Inst)) {
+      return expandStackManipulation(Inst, Out, STI);
     } else {
       return Out.EmitInstruction(Inst, STI);
     }

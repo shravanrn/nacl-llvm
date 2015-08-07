@@ -68,6 +68,10 @@ bool MCNaClExpander::isReturn(const MCInst &Inst) const {
   return InstInfo->get(Inst.getOpcode()).isReturn();
 }
 
+bool MCNaClExpander::isVariadic(const MCInst &Inst) const {
+  return InstInfo->get(Inst.getOpcode()).isVariadic();
+}
+
 bool MCNaClExpander::mayLoad(const MCInst &Inst) const {
   return InstInfo->get(Inst.getOpcode()).mayLoad();
 }

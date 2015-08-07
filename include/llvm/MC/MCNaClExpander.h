@@ -54,6 +54,7 @@ public:
   bool isBranch(const MCInst &Inst) const;
   bool isIndirectBranch(const MCInst &Inst) const;
   bool isReturn(const MCInst &Inst) const;
+  bool isVariadic(const MCInst &Inst) const;
 
   bool mayLoad(const MCInst &Inst) const;
   bool mayStore(const MCInst &Inst) const;
