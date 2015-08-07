@@ -34,6 +34,10 @@ private:
 protected:
   std::unique_ptr<MCInstrInfo> InstInfo;
   std::unique_ptr<MCRegisterInfo> RegInfo;
+  void invalidateScratchRegs(const MCInst &Inst);
+  unsigned getScratchReg(int index);
+  unsigned numScratchRegs() const;
+  virtual bool isValidScratchRegister(unsigned Reg) const = 0;
 
 public:
   MCNaClExpander(const MCContext &Ctx, std::unique_ptr<MCRegisterInfo> &&RI,
@@ -42,10 +46,8 @@ public:
 
   void Error(const MCInst &Inst, const char msg[]);
 
-  void pushScratchReg(unsigned Reg);
-  unsigned popScratchReg();
-  unsigned getScratchReg(int index);
-  unsigned numScratchRegs() const;
+  bool addScratchReg(unsigned Reg);
+  void clearScratchRegs();
 
   bool isPseudo(const MCInst &Inst) const;
 

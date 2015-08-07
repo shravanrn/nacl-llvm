@@ -24,22 +24,30 @@ void MCNaClExpander::Error(const MCInst &Inst, const char msg[]) {
   Ctx.FatalError(Inst.getLoc(), msg);
 }
 
-void MCNaClExpander::pushScratchReg(unsigned Reg) {
+bool MCNaClExpander::addScratchReg(unsigned Reg) {
+  if (!isValidScratchRegister(Reg))
+    return true;
   ScratchRegs.push_back(Reg);
+  return false;
 }
 
-unsigned MCNaClExpander::popScratchReg() {
-  assert(!ScratchRegs.empty() &&
-         "Trying to pop an empty scratch register stack");
+void MCNaClExpander::invalidateScratchRegs(const MCInst &Inst) {
+  // TODO(dschuff): There are arch-specific special cases where this fails,
+  // e.g. xchg/cmpxchg
+  const MCInstrDesc &Desc = InstInfo->get(Inst.getOpcode());
+  for (auto I = ScratchRegs.begin(), E = ScratchRegs.end(); I != E; ++I) {
+    if (Desc.hasDefOfPhysReg(Inst, *I, *RegInfo))
+      I = ScratchRegs.erase(I);
+  }
+}
 
-  unsigned Reg = ScratchRegs.back();
-  ScratchRegs.pop_back();
-  return Reg;
+void MCNaClExpander::clearScratchRegs() {
+  ScratchRegs.clear();
 }
 
 unsigned MCNaClExpander::getScratchReg(int index) {
-  int len = numScratchRegs();
-  return ScratchRegs[len - index - 1];
+  assert(index >= 0 && static_cast<unsigned>(index) < numScratchRegs());
+  return ScratchRegs[numScratchRegs()  - index - 1];
 }
 
 unsigned MCNaClExpander::numScratchRegs() const { return ScratchRegs.size(); }

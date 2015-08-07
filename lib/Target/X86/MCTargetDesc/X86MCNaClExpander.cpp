@@ -39,6 +39,14 @@ static bool isAbsoluteReg(unsigned Reg) {
           Reg == X86::RIP);
 }
 
+bool X86::X86MCNaClExpander::isValidScratchRegister(unsigned Reg) const {
+  // TODO(dschuff): Check the register class.
+  if (isAbsoluteReg(Reg))
+    return false;
+  return true;
+}
+
+
 static void PushReturnAddress(const llvm::MCSubtargetInfo &STI,
                               MCContext &Context, MCStreamer &Out,
                               MCSymbol *RetTarget) {
@@ -565,9 +573,11 @@ void X86::X86MCNaClExpander::emitInstruction(const MCInst &Inst,
   Out.EmitInstruction(Inst, STI);
 }
 
+
 void X86::X86MCNaClExpander::doExpandInst(const MCInst &Inst, MCStreamer &Out,
                                           const MCSubtargetInfo &STI,
                                           bool EmitPrefixes) {
+
 
   // Explicitly IGNORE all pseudo instructions, these will be handled in the
   // older customExpandInst code
@@ -635,6 +645,7 @@ bool X86::X86MCNaClExpander::expandInst(const MCInst &Inst, MCStreamer &Out,
   Guard = true;
 
   doExpandInst(Inst, Out, STI, true);
+  invalidateScratchRegs(Inst);
 
   Guard = false;
   return true;

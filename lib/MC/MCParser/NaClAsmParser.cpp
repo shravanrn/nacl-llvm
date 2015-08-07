@@ -32,7 +32,7 @@ class NaClAsmParser : public MCAsmParserExtension {
     // Call the base implementation.
     MCAsmParserExtension::Initialize(Parser);
     addDirectiveHandler<&NaClAsmParser::ParseScratch>(".scratch");
-    addDirectiveHandler<&NaClAsmParser::ParseUnscratch>(".unscratch");
+    addDirectiveHandler<&NaClAsmParser::ParseUnscratch>(".scratch_clear");
   }
 
   /// ::= {.scratch} reg
@@ -54,7 +54,8 @@ class NaClAsmParser : public MCAsmParserExtension {
     }
     Lex();
 
-    Expander->pushScratchReg(RegNo);
+    if(Expander->addScratchReg(RegNo))
+      return Error(Loc, "Register can't be used as a scratch register");
     return false;
   }
 
@@ -62,12 +63,10 @@ class NaClAsmParser : public MCAsmParserExtension {
   bool ParseUnscratch(StringRef Directive, SMLoc Loc) {
     getParser().checkForValidSection();
     if (getLexer().isNot(AsmToken::EndOfStatement))
-      return TokError("unexpected token in '.unscratch' directive");
+      return TokError("unexpected token in '.scratch_clear' directive");
     Lex();
 
-    if (Expander->numScratchRegs() == 0)
-      return Error(Loc, "No scratch registers specified");
-    Expander->popScratchReg();
+    Expander->clearScratchRegs();
 
     return false;
   }

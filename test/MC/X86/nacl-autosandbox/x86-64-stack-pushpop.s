@@ -31,6 +31,7 @@
 	pop 12(%rsp)
 //X8664:    	popq	12(%rsp)
 
+        .scratch %r11
 	pop 131072(%rax, %rdi, 8)
 //X8664:    	.bundle_lock
 //X8664-NEXT: 	leal	131072(%rax,%rdi,8), %r11d

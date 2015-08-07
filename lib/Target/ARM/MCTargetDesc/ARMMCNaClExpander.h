@@ -34,6 +34,9 @@ public:
   bool expandInst(const MCInst &Inst, MCStreamer &Out,
                   const MCSubtargetInfo &STI) override;
 
+protected:
+  bool isValidScratchRegister(unsigned Reg) const override;
+
 private:
   bool Guard = false; // recursion guard
   int SaveCount = 0;

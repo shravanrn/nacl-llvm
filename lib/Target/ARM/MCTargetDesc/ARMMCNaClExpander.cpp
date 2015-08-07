@@ -28,6 +28,11 @@ using namespace llvm;
 const unsigned kBranchTargetMask = 0xC000000F;
 const unsigned kSandboxMask = 0xC0000000;
 
+bool ARM::ARMMCNaClExpander::isValidScratchRegister(unsigned Reg) const {
+  // TODO(dschuff): Also check the regster class.
+  return Reg != ARM::PC && Reg != ARM::SP;
+}
+
 static void emitBicMask(unsigned Mask, unsigned Reg, ARMCC::CondCodes Pred,
                         unsigned PredReg, MCStreamer &Out,
                         const MCSubtargetInfo &STI) {
