@@ -1,4 +1,4 @@
-// RUN: llvm-mc -filetype asm -triple i386-unknown-nacl %s | FileCheck %s
+// RUN: llvm-mc -nacl-enable-auto-sandboxing -filetype asm -triple i386-unknown-nacl %s | FileCheck %s
 
 // Test that instructions inside bundle-locked groups are not recursively
 // expanded.

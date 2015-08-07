@@ -1,6 +1,6 @@
-// RUN: llvm-mc -filetype asm -triple x86_64-unknown-nacl %s -sfi-hide-sandbox-base=false | FileCheck %s --check-prefix=X8664
-// RUN: llvm-mc -filetype asm -triple x86_64-unknown-nacl %s | FileCheck %s --check-prefix=HIDEBASE
-// RUN: llvm-mc -filetype obj -triple x86_64-unknown-nacl -relocation-model=pic %s | llvm-objdump -disassemble - | FileCheck %s --check-prefix=PIC
+// RUN: llvm-mc -nacl-enable-auto-sandboxing -filetype asm -triple x86_64-unknown-nacl %s -sfi-hide-sandbox-base=false | FileCheck %s --check-prefix=X8664
+// RUN: llvm-mc -nacl-enable-auto-sandboxing -filetype asm -triple x86_64-unknown-nacl %s | FileCheck %s --check-prefix=HIDEBASE
+// RUN: llvm-mc -nacl-enable-auto-sandboxing -filetype obj -triple x86_64-unknown-nacl -relocation-model=pic %s | llvm-objdump -disassemble - | FileCheck %s --check-prefix=PIC
 .scratch %r11
 foo:
 

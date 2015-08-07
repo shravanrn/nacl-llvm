@@ -1,4 +1,4 @@
-// RUN: llvm-mc -filetype asm -triple i386-unknown-nacl %s
+// RUN: llvm-mc -nacl-enable-auto-sandboxing -filetype asm -triple i386-unknown-nacl %s
 
 // Tests a basic .scratch and .unscratch sequence, should succeed
 

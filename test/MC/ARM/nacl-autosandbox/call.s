@@ -1,4 +1,4 @@
-// RUN: llvm-mc -filetype asm -triple armv7-unknown-nacl %s | FileCheck %s
+// RUN: llvm-mc -nacl-enable-auto-sandboxing -filetype asm -triple armv7-unknown-nacl %s | FileCheck %s
 
 foo:	
 

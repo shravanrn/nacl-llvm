@@ -21,6 +21,11 @@ static const char NoteNamespace[] = "NaCl";
 
 namespace llvm {
 
+cl::opt<bool> FlagAutoSandboxing("nacl-enable-auto-sandboxing",
+                                 cl::desc("Use auto-sandboxing assembler"
+                                          " for the NaCl SFI."),
+                                 cl::init(false));
+
 void initializeNaClMCStreamer(MCStreamer &Streamer, MCContext &Ctx,
                               const Triple &TheTriple) {
   assert(TheTriple.isOSNaCl());
@@ -58,10 +63,12 @@ void initializeNaClMCStreamer(MCStreamer &Streamer, MCContext &Ctx,
 
   // Create the Target specific MCNaClExpander
   assert(TheTarget != nullptr);
-  TheTarget->createMCNaClExpander(
-      Streamer, std::unique_ptr<MCRegisterInfo>(
-                    TheTarget->createMCRegInfo(TheTriple.getTriple())),
-      std::unique_ptr<MCInstrInfo>(TheTarget->createMCInstrInfo()));
+  if (FlagAutoSandboxing) {
+    TheTarget->createMCNaClExpander(
+        Streamer, std::unique_ptr<MCRegisterInfo>(
+                      TheTarget->createMCRegInfo(TheTriple.getTriple())),
+        std::unique_ptr<MCInstrInfo>(TheTarget->createMCInstrInfo()));
+  }
 
   // Set bundle-alignment as required by the NaCl ABI for the target.
   Streamer.EmitBundleAlignMode(BundleAlign);

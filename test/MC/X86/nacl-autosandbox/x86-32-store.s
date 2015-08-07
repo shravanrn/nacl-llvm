@@ -1,5 +1,5 @@
-// RUN: llvm-mc -filetype asm -triple i686-unknown-nacl %s | FileCheck %s --check-prefix=X8632
-// RUN: llvm-mc -filetype asm -triple x86_64-unknown-nacl %s | FileCheck %s --check-prefix=X8664
+// RUN: llvm-mc -nacl-enable-auto-sandboxing -filetype asm -triple i686-unknown-nacl %s | FileCheck %s --check-prefix=X8632
+// RUN: llvm-mc -nacl-enable-auto-sandboxing -filetype asm -triple x86_64-unknown-nacl %s | FileCheck %s --check-prefix=X8664
 
 
 .scratch %ecx
