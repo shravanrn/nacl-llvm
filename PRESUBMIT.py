@@ -36,9 +36,6 @@ def _CommonChecks(input_api, output_api):
   results.extend(input_api.canned_checks.PanProjectChecks(
       input_api, output_api, project_name='Native Client',
       excluded_paths=tuple(EXCLUDE_PROJECT_CHECKS_DIRS)))
-  branch_warning = CheckGitBranch()
-  if branch_warning:
-    results.append(output_api.PresubmitPromptWarning(branch_warning))
   return results
 
 def CheckChangeOnUpload(input_api, output_api):
@@ -49,6 +46,9 @@ def CheckChangeOnUpload(input_api, output_api):
   """
   report = []
   report.extend(_CommonChecks(input_api, output_api))
+  branch_warning = CheckGitBranch()
+  if branch_warning:
+    report.append(output_api.PresubmitPromptWarning(branch_warning))
   return report
 
 def CheckChangeOnCommit(input_api, output_api):
@@ -59,7 +59,7 @@ def CheckChangeOnCommit(input_api, output_api):
     output_api: the limited set of output modules allowed in presubmit.
   """
   report = []
-  report.extend(CheckChangeOnUpload(input_api, output_api))
+  report.extend(_CommonChecks(input_api, output_api))
   return report
 
 def GetPreferredTrySlaves(project, change):
