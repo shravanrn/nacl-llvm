@@ -2106,6 +2106,14 @@ OutOfRecordLoop:
     }
   }
 
+  if (CurBBNo != FunctionBBs.size()) {
+    std::string Buffer;
+    raw_string_ostream StrBuf(Buffer);
+    StrBuf << "Declared " << FunctionBBs.size() << " basic blocks. Found: "
+           << CurBBNo;
+    return Error(MalformedBlock, StrBuf.str());
+  }
+
   // Trim the value list down to the size it was before we parsed this function.
   ValueList.shrinkTo(ModuleValueListSize);
   FunctionBBs.clear();
