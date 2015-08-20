@@ -16,3 +16,9 @@ RUN:   | not pnacl-thaw --verbose-parse-errors -o /dev/null 2>&1 \
 RUN:   | FileCheck -check-prefix=TOO-MANY-BBS-DECLARED %s
 
 TOO-MANY-BBS-DECLARED: Declared 2 basic blocks. Found: 1
+
+RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/bad-switch-case.tbc -output - \
+RUN:   | not pnacl-thaw --verbose-parse-errors -o /dev/null 2>&1 \
+RUN:   | FileCheck -check-prefix=BAD-SWITCH-CASE %s
+
+BAD-SWITCH-CASE: Invalid branch in SWITCH case

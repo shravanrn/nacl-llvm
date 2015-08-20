@@ -1850,7 +1850,8 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       // TODO(kschimpf): Deal with values that are too large for NumCases.
       size_t NumCases = Record[3];
 
-      SwitchInst *SI = SwitchInst::Create(Cond, Default, NumCases);
+      std::unique_ptr<SwitchInst> SI(
+          SwitchInst::Create(Cond, Default, NumCases));
 
       size_t CurIdx = 4;
       for (size_t i = 0; i != NumCases; ++i) {
@@ -1870,9 +1871,11 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
         APInt CaseValue(ValueBitWidth,
                         NaClDecodeSignRotatedValue(Record[CurIdx++]));
         BasicBlock *DestBB = getBasicBlock(Record[CurIdx++]);
+        if (DestBB == nullptr)
+          return Error(InvalidValue, "Invalid branch in SWITCH case");
         SI->addCase(ConstantInt::get(Context, CaseValue), DestBB);
       }
-      I = SI;
+      I = SI.release();
       break;
     }
     case naclbitc::FUNC_CODE_INST_UNREACHABLE: // UNREACHABLE
