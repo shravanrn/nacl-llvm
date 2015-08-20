@@ -4,6 +4,12 @@ RUN:   | not pnacl-bcdis | FileCheck --check-prefix=BAD-ZEXT-CAST %s
 BAD-ZEXT-CAST:      %v1 = zext i32 %p0 to i32 (i32);
 BAD-ZEXT-CAST-NEXT: Invalid cast 'zext'. Not defined on i32 to i32 (i32)
 
+RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/bad-dis-llvm.tbc -output - \
+RUN:   | not llvm-dis -bitcode-format=pnacl -o - 2>&1 \
+RUN:   | FileCheck --check-prefix=BAD-LLVM-DIS %s
+
+BAD-LLVM-DIS: Invalid RET record
+
 RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/too-many-bbs-declared.tbc \
 RUN:              -output - \
 RUN:   | not pnacl-thaw --verbose-parse-errors -o /dev/null 2>&1 \

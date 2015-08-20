@@ -160,6 +160,7 @@ int main(int argc, char **argv) {
 
   cl::ParseCommandLineOptions(argc, argv, "llvm .bc -> .ll disassembler\n");
 
+  bool FoundErrors = false; // @LOCALMOD
   std::string ErrorMessage;
   std::unique_ptr<Module> M;
 
@@ -180,36 +181,40 @@ int main(int argc, char **argv) {
         // The Module's BitcodeReader's BitstreamReader takes ownership
         // of the StreamingMemoryObject.
         ErrorOr<std::unique_ptr<Module>> MOrErr =
-            getStreamedBitcodeModule(DisplayFilename, Buffer.release(), Context);
+            getStreamedBitcodeModule(DisplayFilename, Buffer.release(),
+                                     Context);
         M = std::move(*MOrErr);
         M->materializeAllPermanently();
         break;
       }
       case PNaClFormat: {
         M.reset(getNaClStreamedBitcodeModule(
-            DisplayFilename, Buffer.release(), Context, nullptr,
+            DisplayFilename, Buffer.release(), Context, &errs(),
             &ErrorMessage));
         if(M.get()) {
           if (std::error_code EC = M->materializeAllPermanently()) {
+            FoundErrors = true;
             ErrorMessage = EC.message();
             M.reset();
           }
         } else {
-          errs() << argv[0] << ": ";
-          if (ErrorMessage.size())
-            errs() << ErrorMessage << "\n";
-          else
-            errs() << "bitcode didn't read correctly.\n";
-          return 1;
+          FoundErrors = true;
         }
         break;
       }
       case AutodetectFileFormat:
         report_fatal_error("Command can't autodetect file format!");
     }
-    // @LOCALMOD-END
-
+  } else {
+    FoundErrors = true;
   }
+  if (FoundErrors) {
+    if (ErrorMessage.empty())
+      ErrorMessage = "bitcode didn't read correctly.";
+    errs() << argv[0] << ": " << ErrorMessage << '\n';
+    return 1;
+  }
+  // @LOCALMOD-END
 
   // Just use stdout.  We won't actually print anything on it.
   if (DontPrint)
