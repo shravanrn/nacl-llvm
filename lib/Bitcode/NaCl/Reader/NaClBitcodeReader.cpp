@@ -35,22 +35,16 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
-namespace {
+using namespace llvm;
 
 // Models a Cast.  Used to cache casts created in a basic block by the
 // PNaCl bitcode reader.
 struct NaClBitcodeReaderCast {
   // Fields of the conversion.
-  llvm::Instruction::CastOps Op;
-  llvm::Type *Ty;
-  llvm::Value *Val;
-
-  NaClBitcodeReaderCast(llvm::Instruction::CastOps Op, llvm::Type *Ty,
-                        llvm::Value *Val)
-    : Op(Op), Ty(Ty), Val(Val) {}
+  Instruction::CastOps Op;
+  Type *Ty;
+  Value *Val;
 };
-
-} // end of anonymous namespace
 
 namespace llvm {
 
@@ -59,23 +53,22 @@ template<>
 struct DenseMapInfo<NaClBitcodeReaderCast> {
 public:
   static NaClBitcodeReaderCast getEmptyKey() {
-    return NaClBitcodeReaderCast(Instruction::CastOpsEnd,
-                                 DenseMapInfo<Type*>::getEmptyKey(),
-                                 DenseMapInfo<Value*>::getEmptyKey());
+    return NaClBitcodeReaderCast{Instruction::CastOpsEnd,
+                                 DenseMapInfo<Type *>::getEmptyKey(),
+                                 DenseMapInfo<Value *>::getEmptyKey()};
   }
   static NaClBitcodeReaderCast getTombstoneKey() {
-    return NaClBitcodeReaderCast(Instruction::CastOpsEnd,
-                                 DenseMapInfo<Type*>::getTombstoneKey(),
-                                 DenseMapInfo<Value*>::getTombstoneKey());
+    return NaClBitcodeReaderCast{Instruction::CastOpsEnd,
+                                 DenseMapInfo<Type *>::getTombstoneKey(),
+                                 DenseMapInfo<Value *>::getTombstoneKey()};
   }
   static unsigned getHashValue(const NaClBitcodeReaderCast &C) {
     std::pair<int, std::pair<Type*, Value*>> Tuple;
     Tuple.first = C.Op;
     Tuple.second.first = C.Ty;
     Tuple.second.second = C.Val;
-    return DenseMapInfo<std::pair<int,
-                                  std::pair<Type*,
-                                            Value*> > >::getHashValue(Tuple);
+    return DenseMapInfo<
+        std::pair<int, std::pair<Type *, Value *>>>::getHashValue(Tuple);
   }
   static bool isEqual(const NaClBitcodeReaderCast &LHS,
                       const NaClBitcodeReaderCast &RHS) {
@@ -84,8 +77,6 @@ public:
 };
 
 } // end of llvm namespace
-
-using namespace llvm;
 
 namespace {
 
@@ -139,7 +130,6 @@ public:
   void OverwriteValue(Value *V, NaClBcIndexSize_t Idx);
 };
 
-
 class NaClBitcodeReader : public GVMaterializer {
   NaClBitcodeHeader Header;  // Header fields of the PNaCl bitcode file.
   LLVMContext &Context;
@@ -163,11 +153,11 @@ class NaClBitcodeReader : public GVMaterializer {
     // The set of generated conversions.
     DenseMap<NaClBitcodeReaderCast, CastInst*> CastMap;
     // The set of generated conversions that were added for phi nodes,
-    // and may need thier parent basic block defined.
+    // and may need their parent basic block defined.
     std::vector<CastInst*> PhiCasts;
   };
 
-  /// FunctionBBs - While parsing a function body, this is a list of the basic
+  /// When parsing a function body, this is a list of the basic
   /// blocks for the function.
   std::vector<BasicBlockInfo> FunctionBBs;
 
@@ -177,7 +167,7 @@ class NaClBitcodeReader : public GVMaterializer {
 
   // When intrinsic functions are encountered which require upgrading they are
   // stored here with their replacement function.
-  typedef std::vector<std::pair<Function*, Function*> > UpgradedIntrinsicMap;
+  typedef std::vector<std::pair<Function *, Function *>> UpgradedIntrinsicMap;
   UpgradedIntrinsicMap UpgradedIntrinsics;
 
   // Several operations happen after the module header has been read, but
@@ -185,15 +175,14 @@ class NaClBitcodeReader : public GVMaterializer {
   // we've done this yet.
   bool SeenFirstFunctionBody;
 
-  /// DeferredFunctionInfo - When function bodies are initially scanned, this
-  /// map contains info about where to find deferred function body in the
-  /// stream.
+  /// When function bodies are initially scanned, this map contains info about
+  /// where to find deferred function body in the stream.
   DenseMap<Function*, uint64_t> DeferredFunctionInfo;
 
-  /// \brief True if we should only accept supported bitcode format.
+  /// True if we should only accept supported bitcode format.
   bool AcceptSupportedBitcodeOnly;
 
-  /// \brief Integer type use for PNaCl conversion of pointers.
+  /// Integer type use for PNaCl conversion of pointers.
   Type *IntPtrType;
 
   static const std::error_category &BitcodeErrorCategory();
@@ -263,8 +252,8 @@ public:
   /// Generates the corresponding verbose Message, then generates error.
   std::error_code Error(ErrorType E, const std::string &Message) const;
 
-  /// @brief Main interface to parsing a bitcode buffer.
-  /// @returns true if an error occurred.
+  /// Main interface to parsing a bitcode buffer.  returns true if an error
+  /// occurred.
   std::error_code ParseBitcodeInto(Module *M);
 
   /// Convert alignment exponent (i.e. power of two (or zero)) to the
@@ -300,9 +289,9 @@ private:
     return FunctionBBs[ID].BB;
   }
 
-  /// \brief Read a value out of the specified record from slot '*Slot'.
-  /// Increment *Slot past the number of slots used by the value in the record.
-  /// Return true if there is an error.
+  /// Read a value out of the specified record from slot '*Slot'.  Increment
+  /// *Slot past the number of slots used by the value in the record.  Return
+  /// true if there is an error.
   bool popValue(const SmallVector<uint64_t, 64> &Record, size_t *Slot,
                 NaClBcIndexSize_t InstNum, Value **ResVal) {
     if (*Slot == Record.size()) return true;
@@ -313,8 +302,8 @@ private:
     return *ResVal == 0;
   }
 
-  /// getValue -- Version of getValue that returns ResVal directly,
-  /// or 0 if there is an error.
+  /// Version of getValue that returns ResVal directly, or 0 if there is an
+  /// error.
   Value *getValue(const SmallVector<uint64_t, 64> &Record, size_t Slot,
                   NaClBcIndexSize_t InstNum) {
     if (Slot == Record.size()) return 0;
@@ -324,7 +313,7 @@ private:
     return getFnValueByID(ValNo);
   }
 
-  /// getValueSigned -- Like getValue, but decodes signed VBRs.
+  /// Like getValue, but decodes signed VBRs.
   Value *getValueSigned(const SmallVector<uint64_t, 64> &Record, size_t Slot,
                         NaClBcIndexSize_t InstNum) {
     if (Slot == Record.size()) return 0;
@@ -335,32 +324,30 @@ private:
     return getFnValueByID(ValNo);
   }
 
-  /// \brief Create an (elided) cast instruction for basic block
-  /// BBIndex.  Op is the type of cast.  V is the value to cast.  CT
-  /// is the type to convert V to.  DeferInsertion defines whether the
-  /// generated conversion should also be installed into basic block
-  /// BBIndex.  Note: For PHI nodes, we don't insert when created
-  /// (i.e. DeferInsertion=true), since they must be inserted at the end
-  /// of the corresponding incoming basic block.
+  /// Create an (elided) cast instruction for basic block BBIndex.  Op is the
+  /// type of cast.  V is the value to cast.  CT is the type to convert V to.
+  /// DeferInsertion defines whether the generated conversion should also be
+  /// installed into basic block BBIndex.  Note: For PHI nodes, we don't insert
+  /// when created (i.e. DeferInsertion=true), since they must be inserted at
+  /// the end of the corresponding incoming basic block.
   CastInst *CreateCast(NaClBcIndexSize_t BBIndex, Instruction::CastOps Op,
                        Type *CT, Value *V, bool DeferInsertion = false);
 
-  /// \brief Add instructions to cast Op to the given type T into
-  /// block BBIndex.  Follows rules for pointer conversion as defined
-  /// in llvm/lib/Transforms/NaCl/ReplacePtrsWithInts.cpp.
+  /// Add instructions to cast Op to the given type T into block BBIndex.
+  /// Follows rules for pointer conversion as defined in
+  /// llvm/lib/Transforms/NaCl/ReplacePtrsWithInts.cpp.
   ///
   /// Returns 0 if unable to generate conversion value (also generates
   /// an appropriate error message and calls Error).
   Value *ConvertOpToType(Value *Op, Type *T, NaClBcIndexSize_t BBIndex);
 
-  /// \brief If Op is a scalar value, this is a nop.  If Op is a
-  /// pointer value, a PtrToInt instruction is inserted (in BBIndex)
-  /// to convert Op to an integer.  For defaults on DeferInsertion,
-  /// see comments for method CreateCast.
+  /// If Op is a scalar value, this is a nop.  If Op is a pointer value, a
+  /// PtrToInt instruction is inserted (in BBIndex) to convert Op to an integer.
+  /// For defaults on DeferInsertion, see comments for method CreateCast.
   Value *ConvertOpToScalar(Value *Op, NaClBcIndexSize_t BBIndex,
                            bool DeferInsertion = false);
 
-  /// \brief Install instruction I into basic block BB.
+  /// Install instruction I into basic block BB.
   std::error_code InstallInstruction(BasicBlock *BB, Instruction *I);
 
   FunctionType *AddPointerTypesToIntrinsicType(StringRef Name,
@@ -383,14 +370,6 @@ private:
       DenseMap<Function*, uint64_t>::iterator DeferredFunctionInfoIterator);
 };
 
-} // end of anonymous namespace
-
-cl::opt<bool>
-llvm::PNaClAllowLocalSymbolTables(
-    "allow-local-symbol-tables",
-    cl::desc("Allow (function) local symbol tables in PNaCl bitcode files"),
-    cl::init(false));
-
 static_assert(sizeof(NaClBcIndexSize_t) <= sizeof(size_t),
               "NaClBcIndexSize_t incorrectly defined");
 
@@ -406,8 +385,7 @@ void NaClBitcodeReader::FreeState() {
 //  Helper functions to implement forward reference resolution, etc.
 //===----------------------------------------------------------------------===//
 
-/// ConvertToString - Convert a string from a record into an std::string, return
-/// true on failure.
+// Convert a string from a record into an std::string, return true on failure.
 template<typename StrTy>
 static bool ConvertToString(ArrayRef<uint64_t> Record, size_t Idx,
                             StrTy &Result) {
@@ -474,7 +452,6 @@ bool NaClBitcodeReaderValueList::createValueFwdRef(NaClBcIndexSize_t Idx,
   return false;
 }
 
-namespace {
 class NaClBitcodeErrorCategoryType : public std::error_category {
   const char *name() const LLVM_NOEXCEPT override {
     return "pnacl.bitcode";
@@ -513,7 +490,6 @@ class NaClBitcodeErrorCategoryType : public std::error_category {
     llvm_unreachable("Unknown error type!");
   }
 };
-} // end of anonymous namespace.
 
 const std::error_category &NaClBitcodeReader::BitcodeErrorCategory() {
   static NaClBitcodeErrorCategoryType ErrCat;
@@ -538,14 +514,10 @@ Type *NaClBitcodeReader::getTypeByID(NaClBcIndexSize_t ID) {
 //  Functions for parsing blocks from the bitcode file
 //===----------------------------------------------------------------------===//
 
-
-namespace {
-
 static const unsigned MaxAlignmentExponent = 29;
 static_assert(
     (1u << MaxAlignmentExponent) == Value::MaximumAlignment,
     "Inconsistency between Value.MaxAlignment and PNaCl alignment limit");
-}
 
 std::error_code NaClBitcodeReader::Error(ErrorType E,
                                          const std::string &Message) const {
@@ -705,8 +677,6 @@ std::error_code NaClBitcodeReader::ParseTypeTableBody() {
   }
   return std::error_code();
 }
-
-namespace {
 
 // Class to process globals in two passes. In the first pass, build
 // the corresponding global variables with no initializers. In the
@@ -1037,8 +1007,6 @@ public:
   }
 };
 
-} // End anonymous namespace.
-
 std::error_code NaClBitcodeReader::ParseGlobalVars() {
   if (Stream.EnterSubBlock(naclbitc::GLOBALVAR_BLOCK_ID))
     return Error(InvalidRecord, "Malformed block record");
@@ -1186,9 +1154,8 @@ std::error_code NaClBitcodeReader::ParseConstants() {
   return std::error_code();
 }
 
-/// RememberAndSkipFunctionBody - When we see the block for a function body,
-/// remember where it is and then skip it.  This lets us lazily deserialize the
-/// functions.
+// When we see the block for a function body, remember where it is and then skip
+// it.  This lets us lazily deserialize the functions.
 std::error_code NaClBitcodeReader::RememberAndSkipFunctionBody() {
   DEBUG(dbgs() << "-> RememberAndSkipFunctionBody\n");
   // Get the function we are talking about.
@@ -1426,10 +1393,6 @@ std::error_code NaClBitcodeReader::ParseModule(bool Resume) {
   return std::error_code();
 }
 
-const char *llvm::PNaClDataLayout =
-    "e-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-"
-    "f32:32:32-f64:64:64-p:32:32:32-v128:32:32";
-
 std::error_code NaClBitcodeReader::ParseBitcodeInto(Module *M) {
   TheModule = 0;
 
@@ -1506,7 +1469,7 @@ NaClBitcodeReader::CreateCast(NaClBcIndexSize_t BBIndex,
   if (BBIndex >= FunctionBBs.size())
     report_fatal_error("CreateCast on unknown basic block");
   BasicBlockInfo &BBInfo = FunctionBBs[BBIndex];
-  NaClBitcodeReaderCast ModeledCast(Op, CT, V);
+  NaClBitcodeReaderCast ModeledCast{Op, CT, V};
   CastInst *Cast = BBInfo.CastMap[ModeledCast];
   if (Cast == NULL) {
     Cast = CastInst::Create(Op, V, CT);
@@ -1552,7 +1515,7 @@ Value *NaClBitcodeReader::ConvertOpToType(Value *Op, Type *T,
   report_fatal_error(StrM.str());
 }
 
-/// ParseFunctionBody - Lazily parse the specified function body block.
+// Lazily parse the specified function body block.
 std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
   DEBUG(dbgs() << "-> ParseFunctionBody\n");
   if (Stream.EnterSubBlock(naclbitc::FUNCTION_BLOCK_ID))
@@ -2124,7 +2087,7 @@ OutOfRecordLoop:
   return std::error_code();
 }
 
-/// FindFunctionInStream - Find the function body in the bitcode stream
+// Find the function body in the bitcode stream
 std::error_code NaClBitcodeReader::FindFunctionInStream(
     Function *F,
     DenseMap<Function*, uint64_t>::iterator DeferredFunctionInfoIterator) {
@@ -2228,8 +2191,10 @@ std::error_code NaClBitcodeReader::MaterializeModule(Module *M) {
   // delete the old functions to clean up. We can't do this unless the entire
   // module is materialized because there could always be another function body
   // with calls to the old function.
-  for (std::vector<std::pair<Function*, Function*> >::iterator I =
-       UpgradedIntrinsics.begin(), E = UpgradedIntrinsics.end(); I != E; ++I) {
+  for (std::vector<std::pair<Function *, Function *>>::iterator
+           I = UpgradedIntrinsics.begin(),
+           E = UpgradedIntrinsics.end();
+       I != E; ++I) {
     if (I->first != I->second) {
       for (Value::use_iterator UI = I->first->use_begin(),
            UE = I->first->use_end(); UI != UE; ) {
@@ -2241,7 +2206,7 @@ std::error_code NaClBitcodeReader::MaterializeModule(Module *M) {
       I->first->eraseFromParent();
     }
   }
-  std::vector<std::pair<Function*, Function*> >().swap(UpgradedIntrinsics);
+  std::vector<std::pair<Function *, Function *>>().swap(UpgradedIntrinsics);
 
   return std::error_code();
 }
@@ -2289,9 +2254,20 @@ std::error_code NaClBitcodeReader::InitLazyStream() {
   return std::error_code();
 }
 
+} // end of anonymous namespace
+
 //===----------------------------------------------------------------------===//
 // External interface
 //===----------------------------------------------------------------------===//
+
+cl::opt<bool> llvm::PNaClAllowLocalSymbolTables(
+    "allow-local-symbol-tables",
+    cl::desc("Allow (function) local symbol tables in PNaCl bitcode files"),
+    cl::init(false));
+
+const char *llvm::PNaClDataLayout =
+    "e-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-"
+    "f32:32:32-f64:64:64-p:32:32:32-v128:32:32";
 
 /// \brief Get a lazy one-at-time loading module from bitcode.
 ///
