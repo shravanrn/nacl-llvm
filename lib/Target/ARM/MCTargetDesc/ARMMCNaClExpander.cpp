@@ -43,7 +43,7 @@ static void emitBicMask(unsigned Mask, unsigned Reg, ARMCC::CondCodes Pred,
   Bic.addOperand(MCOperand::CreateReg(Reg));
   Bic.addOperand(MCOperand::CreateImm(EncodedMask));
   Bic.addOperand(MCOperand::CreateImm(Pred));
-  Bic.addOperand(MCOperand::CreateReg(ARM::CPSR));
+  Bic.addOperand(MCOperand::CreateReg(PredReg));
   Bic.addOperand(MCOperand::CreateReg(0));
   Out.EmitInstruction(Bic, STI);
 }
@@ -197,13 +197,240 @@ void ARM::ARMMCNaClExpander::expandStackManipulation(
   ARMCC::CondCodes Pred = getPredicate(Inst, *InstInfo, PredReg);
 
   Out.EmitBundleLock(false);
-  Out.EmitInstruction(Inst, STI);
+  if (mayLoad(Inst) || mayStore(Inst)) {
+    expandLoadStore(Inst, Out, STI);
+  } else {
+    Out.EmitInstruction(Inst, STI);
+  }
   emitBicMask(kSandboxMask, ARM::SP, Pred, PredReg, Out, STI);
   Out.EmitBundleUnlock();
 }
 
+static int getMemIdx(const MCInst &Inst, const MCInstrInfo &InstInfo) {
+  unsigned Opc = Inst.getOpcode();
+  const MCOperandInfo *OpInfo = InstInfo.get(Opc).OpInfo;
+  for (int i = 0, e = Inst.getNumOperands(); i < e; i++) {
+    if (OpInfo[i].OperandType == MCOI::OPERAND_MEMORY) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// Sandbox an instruction that uses simple base + imm displacement
+// addressing mode.
+static void sandboxBaseDisp(const MCInst &Inst, const MCInstrInfo &II,
+                            unsigned BaseReg, MCStreamer &Out,
+                            const MCSubtargetInfo &STI) {
+  switch (BaseReg) {
+  case ARM::PC:
+  case ARM::SP:
+    return Out.EmitInstruction(Inst, STI);
+  }
+
+  unsigned PredReg;
+  ARMCC::CondCodes Pred = getPredicate(Inst, II, PredReg);
+
+  Out.EmitBundleLock(false);
+  emitBicMask(kSandboxMask, BaseReg, Pred, PredReg, Out, STI);
+  Out.EmitInstruction(Inst, STI);
+  Out.EmitBundleUnlock();
+}
+
+// Create an ADD instruction which computes the base + reg [+ scale]
+// addressing mode in base LDR/STR instructions into the register Target.
+static MCInst getAddrInstr(const MCInst &Inst, const MCInstrInfo &II, int MemIdx,
+                           unsigned Target) {
+  assert(Inst.getOperand(MemIdx).isReg());
+
+  unsigned AM2Opc = Inst.getOperand(MemIdx + 2).getImm();
+  unsigned Offset = ARM_AM::getAM2Offset(AM2Opc);
+  ARM_AM::ShiftOpc ShOp = ARM_AM::getSORegShOp(ARM_AM::getAM2ShiftOpc(AM2Opc));
+
+  unsigned PredReg;
+  ARMCC::CondCodes Pred = getPredicate(Inst, II, PredReg);
+
+  MCInst Add;
+  Add.setOpcode(ARM::ADDrsi);
+  Add.addOperand(MCOperand::CreateReg(Target));
+  Add.addOperand(Inst.getOperand(MemIdx));
+  Add.addOperand(Inst.getOperand(MemIdx + 1));
+  Add.addOperand(MCOperand::CreateImm(ARM_AM::getSORegOpc(ShOp, Offset)));
+  Add.addOperand(MCOperand::CreateImm(Pred));
+  Add.addOperand(MCOperand::CreateReg(PredReg));
+  Add.addOperand(MCOperand::CreateReg(0));
+
+  return Add;
+}
+
+// Demote the load/store opcode to the sandboxed equivalent, i.e.,
+// the version that uses a base + immediate displacement.
+// TODO: add support for different sizes, like LDRB, LDRH, etc
+static unsigned sandboxOpcode(unsigned Opcode) {
+  switch (Opcode) {
+  default:
+    return Opcode;
+  case ARM::LDRi12:
+  case ARM::LDR_PRE_IMM:
+  case ARM::LDR_PRE_REG:
+  case ARM::LDRrs:
+    return ARM::LDRi12;
+  case ARM::STRi12:
+  case ARM::STR_PRE_IMM:
+  case ARM::STR_PRE_REG:
+  case ARM::STRrs:
+    return ARM::STRi12;
+  }
+}
+
+// Sandbox the load/store with reg + reg + shift displacement into a
+// simple load/store with base + imediate displacement.  Target is the
+// register that will eventually be the base in the sandboxed
+// load/store.  This is useful for passing in a scratch register, or
+// the destination operand (for loads). RegIdx is the index of the
+// operand which is the register to load to/store from, and MemIdx
+// is the index to the memory operand
+static void sandboxBaseRegScale(const MCInst &Inst, const MCInstrInfo &II,
+                                bool PostIncrement, int RegIdx, int MemIdx,
+                                unsigned Target, MCStreamer &Out,
+                                const MCSubtargetInfo &STI) {
+  unsigned PredReg;
+  ARMCC::CondCodes Pred = getPredicate(Inst, II, PredReg);
+
+  if (PostIncrement) {
+    sandboxBaseDisp(Inst, II, Inst.getOperand(MemIdx).getReg(), Out, STI);
+  } else {
+    Out.EmitBundleLock(false);
+    Out.EmitInstruction(getAddrInstr(Inst, II, MemIdx, Target), STI);
+    emitBicMask(kSandboxMask, Target, Pred, PredReg, Out, STI);
+
+    MCInst SandboxedInst;
+    SandboxedInst.setOpcode(sandboxOpcode(Inst.getOpcode()));
+    SandboxedInst.addOperand(Inst.getOperand(RegIdx));
+    SandboxedInst.addOperand(MCOperand::CreateReg(Target));
+    SandboxedInst.addOperand(MCOperand::CreateImm(0));
+    SandboxedInst.addOperand(MCOperand::CreateImm(Pred));
+    SandboxedInst.addOperand(MCOperand::CreateReg(PredReg));
+    Out.EmitInstruction(SandboxedInst, STI);
+    Out.EmitBundleUnlock();
+  }
+}
+
+
+void ARM::ARMMCNaClExpander::expandPrefetch(const MCInst &Inst, MCStreamer &Out,
+                                            const MCSubtargetInfo &STI) {
+  if (Inst.getOpcode() == ARM::PLDi12) {
+    return sandboxBaseDisp(Inst, *InstInfo, Inst.getOperand(0).getReg(), Out, STI);
+  } else if (Inst.getOpcode() == ARM::PLDrs) {
+    if (numScratchRegs() == 0)
+      Error(Inst, "Not enough scratch registers provided");
+    unsigned Scratch = getScratchReg(0);
+
+    Out.EmitBundleLock(false);
+    Out.EmitInstruction(getAddrInstr(Inst, *InstInfo, 0, Scratch), STI);
+
+    unsigned PredReg;
+    ARMCC::CondCodes Pred = getPredicate(Inst, *InstInfo, PredReg);
+
+    emitBicMask(kSandboxMask, Scratch, Pred, PredReg, Out, STI);
+
+    MCInst SandboxedInst;
+    SandboxedInst.setOpcode(ARM::PLDi12);
+    SandboxedInst.addOperand(MCOperand::CreateReg(Scratch));
+    SandboxedInst.addOperand(MCOperand::CreateImm(0));
+    Out.EmitInstruction(SandboxedInst, STI);
+
+    Out.EmitBundleUnlock();
+  } else {
+    Out.EmitInstruction(Inst, STI);
+  }
+}
+
+
+void ARM::ARMMCNaClExpander::expandLoadStore(const MCInst &Inst,
+                                             MCStreamer &Out,
+                                             const MCSubtargetInfo &STI) {
+  switch (Inst.getOpcode()) {
+  case ARM::STMIA_UPD:
+  case ARM::STMDA_UPD:
+  case ARM::STMDB_UPD:
+  case ARM::STMIB_UPD:
+
+  case ARM::VSTMDIA_UPD:
+  case ARM::VSTMDDB_UPD:
+  case ARM::VSTMSIA_UPD:
+  case ARM::VSTMSDB_UPD:
+
+  case ARM::LDMIA_UPD:
+  case ARM::LDMDA_UPD:
+  case ARM::LDMDB_UPD:
+  case ARM::LDMIB_UPD:
+
+  case ARM::VLDMDIA_UPD:
+  case ARM::VLDMDDB_UPD:
+  case ARM::VLDMSIA_UPD:
+  case ARM::VLDMSDB_UPD:
+
+  case ARM::STMIA:
+  case ARM::STMDA:
+  case ARM::STMDB:
+  case ARM::STMIB:
+
+  case ARM::LDMIA:
+  case ARM::LDMDA:
+  case ARM::LDMDB:
+  case ARM::LDMIB:
+    return sandboxBaseDisp(Inst, *InstInfo, Inst.getOperand(0).getReg(), Out,
+                           STI);
+  }
+
+  int MemIdx = getMemIdx(Inst, *InstInfo);
+  assert(MemIdx != -1);
+
+  unsigned BaseReg = Inst.getOperand(MemIdx).getReg();
+  bool PostIncrement = false;
+
+  switch (Inst.getOpcode()) {
+  case ARM::PLDi12:
+  case ARM::PLDrs:
+    return expandPrefetch(Inst, Out, STI);
+  case ARM::LDRi12:
+  case ARM::STRi12:
+  case ARM::LDR_PRE_IMM:
+  case ARM::STR_PRE_IMM:
+  case ARM::LDR_POST_IMM:
+  case ARM::STR_POST_IMM:
+    return sandboxBaseDisp(Inst, *InstInfo, Inst.getOperand(MemIdx).getReg(),
+                           Out, STI);
+  case ARM::LDR_PRE_REG:
+    return sandboxBaseRegScale(Inst, *InstInfo, false, 0, MemIdx, BaseReg, Out,
+                               STI);
+  case ARM::STR_PRE_REG:
+    return sandboxBaseRegScale(Inst, *InstInfo, false, 1, MemIdx, BaseReg, Out,
+                               STI);
+  case ARM::LDR_POST_REG:
+    PostIncrement = true;
+  case ARM::LDRrs:
+    return sandboxBaseRegScale(Inst, *InstInfo, PostIncrement, 0, MemIdx,
+                               Inst.getOperand(0).getReg(), Out, STI);
+  case ARM::STR_POST_REG:
+    PostIncrement = true;
+  case ARM::STRrs:
+    if (numScratchRegs() == 0)
+      Error(Inst, "Not enough scratch registers provided");
+    return sandboxBaseRegScale(Inst, *InstInfo, PostIncrement, 0, MemIdx,
+                               getScratchReg(0), Out, STI);
+  default:
+    // Fall back case, should handle all other instructions that load/store memory
+    // such as VFP/NEON loads/stores and prefetch instructions.
+    return sandboxBaseDisp(Inst, *InstInfo, Inst.getOperand(MemIdx).getReg(), Out,
+                           STI);
+  }
+}
+
 void ARM::ARMMCNaClExpander::doExpandInst(const MCInst &Inst, MCStreamer &Out,
                                           const MCSubtargetInfo &STI) {
+
   // This logic is to remain compatible with the existing pseudo instruction
   // expansion code in ARMMCNaCl.cpp
   if (SaveCount == 0) {
@@ -244,6 +471,8 @@ void ARM::ARMMCNaClExpander::doExpandInst(const MCInst &Inst, MCStreamer &Out,
       return expandControlFlow(Inst, Out, STI);
     } else if (mayModifyStack(Inst)) {
       return expandStackManipulation(Inst, Out, STI);
+    } else if (mayLoad(Inst) || mayStore(Inst)) {
+      return expandLoadStore(Inst, Out, STI);
     } else {
       return Out.EmitInstruction(Inst, STI);
     }

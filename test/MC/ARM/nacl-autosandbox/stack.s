@@ -145,31 +145,49 @@
 
 	ldr sp, [r0]
 //CHECK:    .bundle_lock
+//CHECK-NEXT: 	.bundle_lock
+//CHECK-NEXT: 	bic	r0, r0, #-1073741824
 //CHECK-NEXT: 	ldr	sp, [r0]
+//CHECK-NEXT: 	.bundle_unlock
 //CHECK-NEXT: 	bic	sp, sp, #-1073741824
 //CHECK-NEXT: 	.bundle_unlock
 
 	ldrd r12, sp, [r0]
 //CHECK:    .bundle_lock
+//CHECK-NEXT: 	.bundle_lock
+//CHECK-NEXT: 	bic	r0, r0, #-1073741824
 //CHECK-NEXT: 	ldrd	r12, sp, [r0]
+//CHECK-NEXT: 	.bundle_unlock
 //CHECK-NEXT: 	bic	sp, sp, #-1073741824
 //CHECK-NEXT: 	.bundle_unlock
 
 	ldmia r0, {r1, sp}
-//CHECK:        .bundle_lock
+//CHECK:    .bundle_lock
+//CHECK-NEXT: 	.bundle_lock
+//CHECK-NEXT: 	bic	r0, r0, #-1073741824
 //CHECK-NEXT: 	ldm	r0, {r1, sp}
+//CHECK-NEXT: 	.bundle_unlock
 //CHECK-NEXT: 	bic	sp, sp, #-1073741824
 //CHECK-NEXT: 	.bundle_unlock
 
 
 	str sp, [r0]
-//CHECK-NOT: bic
-//CHECK:    str	sp, [r0]
+//CHECK:    .bundle_lock
+//CHECK-NEXT: 	bic	r0, r0, #-1073741824
+//CHECK-NEXT: 	str	sp, [r0]
+//CHECK-NEXT: 	.bundle_unlock
 
 	strd r12, sp, [r0]
-//CHECK-NOT: bic
-//CHECK:    strd	r12, sp, [r0]
+//CHECK:    .bundle_lock
+//CHECK-NEXT: 	bic	r0, r0, #-1073741824
+//CHECK-NEXT: 	strd	r12, sp, [r0]
+//CHECK-NEXT: 	.bundle_unlock
 
 	stmia r0, {r1, sp}
-//CHECK-NOT: bic
-//CHECK: stm r0, {r1, sp}
+//CHECK:    .bundle_lock
+//CHECK-NEXT: 	bic	r0, r0, #-1073741824
+//CHECK-NEXT: 	stm	r0, {r1, sp}
+//CHECK-NEXT: 	.bundle_unlock
+
+	
+	
