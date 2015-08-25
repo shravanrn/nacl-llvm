@@ -34,6 +34,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
+#include <limits>
 
 using namespace llvm;
 
@@ -1518,8 +1519,15 @@ Value *NaClBitcodeReader::ConvertOpToType(Value *Op, Type *T,
 // Lazily parse the specified function body block.
 std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
   DEBUG(dbgs() << "-> ParseFunctionBody\n");
-  if (Stream.EnterSubBlock(naclbitc::FUNCTION_BLOCK_ID))
+  unsigned NumWordsInFunction = 0;
+  if (Stream.EnterSubBlock(naclbitc::FUNCTION_BLOCK_ID, &NumWordsInFunction))
     return Error(InvalidRecord, "Malformed block record");
+  uint64_t NumBytesInFunction =
+      NumWordsInFunction * naclbitc::BitstreamWordSize;
+  // Defines the maximum number of records that can occur in the
+  // function block, based on the minimum size of a record.
+  uint64_t MaxRecordsInFunction =
+      NumBytesInFunction * (CHAR_BIT / naclbitc::MinRecordBitSize);
 
   NaClBcIndexSize_t ModuleValueListSize = ValueList.size();
 
@@ -1587,9 +1595,17 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
     case naclbitc::FUNC_CODE_DECLAREBLOCKS:     // DECLAREBLOCKS: [nblocks]
       if (Record.size() != 1 || Record[0] == 0)
         return Error(InvalidRecord, "Invalid DECLAREBLOCKS record");
+      // Check for bad large sizes, since they can make ridiculous memory
+      // requests and hang the user for large amounts of time.
+      if (Record[0] > MaxRecordsInFunction) {
+        std::string Buffer;
+        raw_string_ostream StrBuf(Buffer);
+        StrBuf << "Function defines " << Record[0]
+               << " basic blocks, which is too big for a function containing "
+               << NumBytesInFunction << " bytes";
+        return Error(InvalidValue, StrBuf.str());
+      }
       // Create all the basic blocks for the function.
-      // TODO(kschimpf): Figure out how to handle size values that
-      // are too large.
       FunctionBBs.resize(Record[0]);
       for (size_t i = 0, e = FunctionBBs.size(); i != e; ++i) {
         BasicBlockInfo &BBInfo = FunctionBBs[i];
@@ -2075,8 +2091,8 @@ OutOfRecordLoop:
   if (CurBBNo != FunctionBBs.size()) {
     std::string Buffer;
     raw_string_ostream StrBuf(Buffer);
-    StrBuf << "Declared " << FunctionBBs.size() << " basic blocks. Found: "
-           << CurBBNo;
+    StrBuf << "Declared " << FunctionBBs.size()
+           << " basic blocks. Found: " << CurBBNo;
     return Error(MalformedBlock, StrBuf.str());
   }
 

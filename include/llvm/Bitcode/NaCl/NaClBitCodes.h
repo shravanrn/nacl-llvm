@@ -28,12 +28,14 @@ namespace llvm {
 class raw_ostream;
 
 namespace naclbitc {
-  enum StandardWidths {
-    BlockIDWidth   = 8,  // We use VBR-8 for block IDs.
-    CodeLenWidth   = 4,  // Codelen are VBR-4.
-    BlockSizeWidth = 32, // BlockSize up to 2^32 32-bit words = 16GB per block.
-    MaxAbbrevWidth = 32  // Maximum value allowed for Fixed and VBR.
-  };
+enum StandardWidths {
+  BlockIDWidth = 8,      // We use VBR-8 for block IDs.
+  CodeLenWidth = 4,      // Codelen are VBR-4.
+  BlockSizeWidth = 32,   // BlockSize up to 2^32 32-bit words = 16GB per block.
+  MaxAbbrevWidth = 32,   // Maximum value allowed for Fixed and VBR.
+  BitstreamWordSize = sizeof(uint32_t), // Number of bytes in bitstream word.
+  MinRecordBitSize = 2   // Minimum number of bits needed to represent a record.
+};
 
   // The standard abbrev namespace always has a way to exit a block, enter a
   // nested block, define abbrevs, and define an unabbreviated record.

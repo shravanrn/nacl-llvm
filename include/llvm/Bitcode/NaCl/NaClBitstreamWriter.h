@@ -122,7 +122,7 @@ private:
   unsigned GetWordIndex() const {
     unsigned Offset = GetBufferOffset();
     assert((Offset & 3) == 0 && "Not 32-bit aligned");
-    return Offset / 4;
+    return Offset / naclbitc::BitstreamWordSize;
   }
 
 public:
@@ -351,7 +351,7 @@ public:
 
     // Compute the size of the block, in words, not counting the size field.
     unsigned SizeInWords = GetWordIndex() - B.StartSizeWord - 1;
-    unsigned ByteNo = B.StartSizeWord*4;
+    unsigned ByteNo = B.StartSizeWord * naclbitc::BitstreamWordSize;
 
     // Update the block size field in the header of this sub-block.
     BackpatchWord(ByteNo, SizeInWords);
