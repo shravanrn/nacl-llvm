@@ -59,15 +59,10 @@ TEST(NaClParseTypesTest, BadTypeReferences) {
   const uint64_t AddSelfReference[] = {
     ReplaceIndex, NaClMungedBitcode::Replace, 3, 3, 1, Terminator
   };
-  EXPECT_FALSE(Munger.runTest(ARRAY(AddSelfReference), false));
-  EXPECT_EQ(
-      "Error: Record doesn't have expected size or structure\n",
-      Munger.getTestResults());
-  EXPECT_FALSE(Munger.runTest(ARRAY(AddSelfReference), true));
-  EXPECT_EQ(
-      "Error(40:2): Invalid TYPE_CODE_FLOAT record\n"
-      "Error: Record doesn't have expected size or structure\n",
-      Munger.getTestResults());
+  EXPECT_FALSE(Munger.runTest(ARRAY(AddSelfReference)));
+  EXPECT_EQ("Invalid TYPE_CODE_FLOAT record\n"
+            "Corrupted bitcode\n",
+            stripErrorPrefix(Munger.getTestResults()));
 }
 
 } // end of namespace naclmungetest

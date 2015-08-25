@@ -5,7 +5,7 @@ BAD-ZEXT-CAST:      %v1 = zext i32 %p0 to i32 (i32);
 BAD-ZEXT-CAST-NEXT: Invalid cast 'zext'. Not defined on i32 to i32 (i32)
 
 RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/bad-bb-size.tbc -output - \
-RUN:   | not pnacl-thaw -o /dev/null 2>&1 -verbose-parse-errors \
+RUN:   | not pnacl-thaw -o /dev/null 2>&1 \
 RUN:   | FileCheck --check-prefix=BAD-BB-SIZE %s
 
 BAD-BB-SIZE: Function defines 3105555534 basic blocks, which is too big for a function containing 36 bytes
@@ -18,13 +18,13 @@ BAD-LLVM-DIS: Invalid RET record
 
 RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/too-many-bbs-declared.tbc \
 RUN:              -output - \
-RUN:   | not pnacl-thaw --verbose-parse-errors -o /dev/null 2>&1 \
+RUN:   | not pnacl-thaw -o /dev/null 2>&1 \
 RUN:   | FileCheck -check-prefix=TOO-MANY-BBS-DECLARED %s
 
 TOO-MANY-BBS-DECLARED: Declared 2 basic blocks. Found: 1
 
 RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/bad-switch-case.tbc -output - \
-RUN:   | not pnacl-thaw --verbose-parse-errors -o /dev/null 2>&1 \
+RUN:   | not pnacl-thaw -o /dev/null 2>&1 \
 RUN:   | FileCheck -check-prefix=BAD-SWITCH-CASE %s
 
 BAD-SWITCH-CASE: Invalid branch in SWITCH case

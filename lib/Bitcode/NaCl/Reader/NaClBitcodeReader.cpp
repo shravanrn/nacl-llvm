@@ -18,12 +18,15 @@
 #include "llvm/Bitcode/NaCl/NaClBitstreamReader.h"
 #include "llvm/Bitcode/NaCl/NaClLLVMBitCodes.h"
 #include "llvm/Bitcode/NaCl/NaClReaderWriter.h"
+#include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/IR/AutoUpgrade.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/GVMaterializer.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/OperandTraits.h"
 #include "llvm/IR/Operator.h"
@@ -131,12 +134,18 @@ public:
   void OverwriteValue(Value *V, NaClBcIndexSize_t Idx);
 };
 
+static DiagnosticHandlerFunction getDiagHandler(DiagnosticHandlerFunction F,
+                                                LLVMContext &C) {
+  if (F)
+    return F;
+  return [&C](const DiagnosticInfo &DI) { C.diagnose(DI); };
+}
+
 class NaClBitcodeReader : public GVMaterializer {
   NaClBitcodeHeader Header;  // Header fields of the PNaCl bitcode file.
   LLVMContext &Context;
+  DiagnosticHandlerFunction DiagnosticHandler;
   Module *TheModule;
-  // If non-null, stream to write verbose errors to.
-  raw_ostream *Verbose;
   PNaClAllowedIntrinsics AllowedIntrinsics;
   std::unique_ptr<MemoryBuffer> Buffer;
   std::unique_ptr<NaClBitstreamReader> StreamFile;
@@ -186,53 +195,25 @@ class NaClBitcodeReader : public GVMaterializer {
   /// Integer type use for PNaCl conversion of pointers.
   Type *IntPtrType;
 
-  static const std::error_category &BitcodeErrorCategory();
-
 public:
-
-  /// Types of errors reported.
-  enum ErrorType {
-    CouldNotFindFunctionInStream // Unable to find function in bitcode stream.
-    = 1,                         // Note: Error types must not be zero!
-    InsufficientFunctionProtos,
-    InvalidBitstream,         // Error in bitstream format.
-    InvalidBlock,             // Invalid block found in bitcode.
-    InvalidConstantReference, // Bad constant reference.
-    InvalidDataAfterModule,   // Invalid data after module.
-    InvalidInstructionWithNoBB,  // No basic block for instruction.
-    InvalidMultipleBlocks,    // Multiple blocks for a kind of block that should
-                              // have only one.
-    InvalidRecord,            // Record doesn't have expected size or structure.
-    InvalidSkippedBlock,      // Unable to skip unknown block in bitcode file.
-    InvalidType,              // Invalid type in record.
-    InvalidTypeForValue,      // Type of value incorrect.
-    InvalidValue,             // Invalid value in record.
-    MalformedBlock            // Unable to advance over block.
-  };
-
   explicit NaClBitcodeReader(MemoryBuffer *buffer, LLVMContext &C,
-                             raw_ostream *Verbose,
+                             DiagnosticHandlerFunction DiagnosticHandler,
                              bool AcceptSupportedOnly)
-      : Context(C), TheModule(nullptr), Verbose(Verbose), AllowedIntrinsics(&C),
-        Buffer(buffer),
+      : Context(C), DiagnosticHandler(getDiagHandler(DiagnosticHandler, C)),
+        TheModule(nullptr), AllowedIntrinsics(&C), Buffer(buffer),
         LazyStreamer(nullptr), NextUnreadBit(0), SeenValueSymbolTable(false),
-        ValueList(),
-        SeenFirstFunctionBody(false),
+        ValueList(), SeenFirstFunctionBody(false),
         AcceptSupportedBitcodeOnly(AcceptSupportedOnly),
-        IntPtrType(IntegerType::get(C, PNaClIntPtrTypeBitSize)) {
-  }
-  explicit NaClBitcodeReader(StreamingMemoryObject *streamer,
-                             LLVMContext &C,
-                             raw_ostream *Verbose,
+        IntPtrType(IntegerType::get(C, PNaClIntPtrTypeBitSize)) {}
+  explicit NaClBitcodeReader(StreamingMemoryObject *streamer, LLVMContext &C,
+                             DiagnosticHandlerFunction DiagnosticHandler,
                              bool AcceptSupportedOnly)
-      : Context(C), TheModule(nullptr), Verbose(Verbose), AllowedIntrinsics(&C),
-        Buffer(nullptr),
+      : Context(C), DiagnosticHandler(getDiagHandler(DiagnosticHandler, C)),
+        TheModule(nullptr), AllowedIntrinsics(&C), Buffer(nullptr),
         LazyStreamer(streamer), NextUnreadBit(0), SeenValueSymbolTable(false),
-        ValueList(),
-        SeenFirstFunctionBody(false),
+        ValueList(), SeenFirstFunctionBody(false),
         AcceptSupportedBitcodeOnly(AcceptSupportedOnly),
-        IntPtrType(IntegerType::get(C, PNaClIntPtrTypeBitSize)) {
-  }
+        IntPtrType(IntegerType::get(C, PNaClIntPtrTypeBitSize)) {}
   ~NaClBitcodeReader() override {
     FreeState();
   }
@@ -246,12 +227,11 @@ public:
   void Dematerialize(GlobalValue *GV) override;
   void releaseBuffer();
 
-  std::error_code Error(ErrorType E) const {
-    return std::error_code(E, BitcodeErrorCategory());
-  }
+  std::error_code Error(std::error_code EC, const Twine &Message) const;
 
-  /// Generates the corresponding verbose Message, then generates error.
-  std::error_code Error(ErrorType E, const std::string &Message) const;
+  std::error_code Error(const Twine &Message) const {
+    return Error(make_error_code(BitcodeError::CorruptedBitcode), Message);
+  }
 
   /// Main interface to parsing a bitcode buffer.  returns true if an error
   /// occurred.
@@ -453,50 +433,6 @@ bool NaClBitcodeReaderValueList::createValueFwdRef(NaClBcIndexSize_t Idx,
   return false;
 }
 
-class NaClBitcodeErrorCategoryType : public std::error_category {
-  const char *name() const LLVM_NOEXCEPT override {
-    return "pnacl.bitcode";
-  }
-  std::string message(int IndexError) const override {
-    switch(static_cast<NaClBitcodeReader::ErrorType>(IndexError)) {
-    case NaClBitcodeReader::CouldNotFindFunctionInStream:
-      return "Unable to find function in bitcode stream.";
-    case NaClBitcodeReader::InsufficientFunctionProtos:
-      return "Insufficient function protos";
-    case NaClBitcodeReader::InvalidBitstream:
-      return "Error in bitstream format";
-    case NaClBitcodeReader::InvalidBlock:
-      return "Invalid block found in bitcode file";
-    case NaClBitcodeReader::InvalidConstantReference:
-      return "Bad constant reference";
-    case NaClBitcodeReader::InvalidDataAfterModule:
-      return "Invalid data after module";
-    case NaClBitcodeReader::InvalidInstructionWithNoBB:
-      return "No basic block for instruction";
-    case NaClBitcodeReader::InvalidMultipleBlocks:
-      return "Multiple blocks for a kind of block that should have only one";
-    case NaClBitcodeReader::InvalidRecord:
-      return "Record doesn't have expected size or structure";
-    case NaClBitcodeReader::InvalidSkippedBlock:
-      return "Unable to skip unknown block in bitcode file";
-    case NaClBitcodeReader::InvalidType:
-      return "Invalid type in record";
-    case NaClBitcodeReader::InvalidTypeForValue:
-      return "Type of value in record incorrect";
-    case NaClBitcodeReader::InvalidValue:
-      return "Invalid value in record";
-    case NaClBitcodeReader::MalformedBlock:
-      return "Malformed block. Unable to advance over block";
-    }
-    llvm_unreachable("Unknown error type!");
-  }
-};
-
-const std::error_category &NaClBitcodeReader::BitcodeErrorCategory() {
-  static NaClBitcodeErrorCategoryType ErrCat;
-  return ErrCat;
-}
-
 Type *NaClBitcodeReader::getTypeByID(NaClBcIndexSize_t ID) {
   // The type table size is always specified correctly.
   if (ID >= TypeList.size())
@@ -520,13 +456,15 @@ static_assert(
     (1u << MaxAlignmentExponent) == Value::MaximumAlignment,
     "Inconsistency between Value.MaxAlignment and PNaCl alignment limit");
 
-std::error_code NaClBitcodeReader::Error(ErrorType E,
-                                         const std::string &Message) const {
-  if (Verbose) {
-    naclbitc::ErrorAt(*Verbose, naclbitc::Error, Stream.GetCurrentBitNo())
-        << Message << "\n";
-  }
-  return Error(E);
+std::error_code NaClBitcodeReader::Error(std::error_code EC,
+                                         const Twine &Message) const {
+  std::string Buffer;
+  raw_string_ostream StrBuf(Buffer);
+  StrBuf << "(" << naclbitc::getBitAddress(Stream.GetCurrentBitNo()) << ") "
+         << Message;
+  BitcodeDiagnosticInfo DI(EC, DS_Error, StrBuf.str());
+  DiagnosticHandler(DI);
+  return EC;
 }
 
 std::error_code NaClBitcodeReader::getAlignmentValue(
@@ -536,7 +474,7 @@ std::error_code NaClBitcodeReader::getAlignmentValue(
     raw_string_ostream StrBuf(Buffer);
     StrBuf << "Alignment can't be greater than 2**" << MaxAlignmentExponent
            << ". Found: 2**" << (Exponent - 1);
-    return Error(InvalidValue, StrBuf.str());
+    return Error(StrBuf.str());
   }
   Alignment = (1 << static_cast<unsigned>(Exponent)) >> 1;
   return std::error_code();
@@ -545,7 +483,7 @@ std::error_code NaClBitcodeReader::getAlignmentValue(
 std::error_code NaClBitcodeReader::ParseTypeTable() {
   DEBUG(dbgs() << "-> ParseTypeTable\n");
   if (Stream.EnterSubBlock(naclbitc::TYPE_BLOCK_ID_NEW))
-    return Error(InvalidRecord, "Malformed block record");
+    return Error("Malformed block record");
 
   std::error_code result = ParseTypeTableBody();
   if (!result)
@@ -555,7 +493,7 @@ std::error_code NaClBitcodeReader::ParseTypeTable() {
 
 std::error_code NaClBitcodeReader::ParseTypeTableBody() {
   if (!TypeList.empty())
-    return Error(InvalidMultipleBlocks, "Multiple TYPE_BLOCKs found!");
+    return Error("Multiple TYPE_BLOCKs found!");
 
   SmallVector<uint64_t, 64> Record;
   NaClBcIndexSize_t NumRecords = 0;
@@ -567,13 +505,12 @@ std::error_code NaClBitcodeReader::ParseTypeTableBody() {
 
     switch (Entry.Kind) {
     case NaClBitstreamEntry::SubBlock:
-      return Error(InvalidBlock, "Invalid block found in the types block");
+      return Error("Invalid block found in the types block");
     case NaClBitstreamEntry::Error:
-      return Error(MalformedBlock, "Malformed types block");
+      return Error("Malformed types block");
     case NaClBitstreamEntry::EndBlock:
       if (NumRecords != ExpectedNumRecords)
-        return Error(MalformedBlock,
-                     "Invalid forward reference in the types block");
+        return Error("Invalid forward reference in the types block");
       return std::error_code();
     case NaClBitstreamEntry::Record:
       // The interesting case.
@@ -590,17 +527,17 @@ std::error_code NaClBitcodeReader::ParseTypeTableBody() {
       raw_string_ostream StrM(Message);
       StrM << "Unknown type code in type table: " << TypeCode;
       StrM.flush();
-      return Error(InvalidValue, Message);
+      return Error(Message);
     }
 
     case naclbitc::TYPE_CODE_NUMENTRY: { // TYPE_CODE_NUMENTRY: [numentries]
       // TYPE_CODE_NUMENTRY contains a count of the number of types in the
       // type list.  This allows us to reserve space.
       if (Record.size() != 1)
-        return Error(InvalidRecord, "Invalid TYPE_CODE_NUMENTRY record");
+        return Error("Invalid TYPE_CODE_NUMENTRY record");
       uint64_t Size = Record[0];
       if (Size > NaClBcIndexSize_t_Max)
-        return Error(InvalidValue, "Size too big in TYPE_CODE_NUMENTRY record");
+        return Error("Size too big in TYPE_CODE_NUMENTRY record");
       // The code double checks that Expected size and the actual size
       // at the end of the block. To reduce allocations we preallocate
       // the space.
@@ -615,25 +552,25 @@ std::error_code NaClBitcodeReader::ParseTypeTableBody() {
     }
     case naclbitc::TYPE_CODE_VOID: // VOID
       if (Record.size() != 0)
-        return Error(InvalidRecord, "Invalid TYPE_CODE_VOID record");
+        return Error("Invalid TYPE_CODE_VOID record");
       ResultTy = Type::getVoidTy(Context);
       break;
 
     case naclbitc::TYPE_CODE_FLOAT: // FLOAT
       if (Record.size() != 0)
-        return Error(InvalidRecord, "Invalid TYPE_CODE_FLOAT record");
+        return Error("Invalid TYPE_CODE_FLOAT record");
       ResultTy = Type::getFloatTy(Context);
       break;
 
     case naclbitc::TYPE_CODE_DOUBLE: // DOUBLE
       if (Record.size() != 0)
-        return Error(InvalidRecord, "Invalid TYPE_CODE_DOUBLE record");
+        return Error("Invalid TYPE_CODE_DOUBLE record");
       ResultTy = Type::getDoubleTy(Context);
       break;
 
     case naclbitc::TYPE_CODE_INTEGER: // INTEGER: [width]
       if (Record.size() != 1)
-        return Error(InvalidRecord, "Invalid TYPE_CODE_INTEGER record");
+        return Error("Invalid TYPE_CODE_INTEGER record");
       // TODO(kschimpf): Should we check if Record[0] is in range?
       ResultTy = IntegerType::get(Context, Record[0]);
       break;
@@ -641,7 +578,7 @@ std::error_code NaClBitcodeReader::ParseTypeTableBody() {
     case naclbitc::TYPE_CODE_FUNCTION: {
       // FUNCTION: [vararg, retty, paramty x N]
       if (Record.size() < 2)
-        return Error(InvalidRecord, "Invalid TYPE_CODE_FUNCTION record");
+        return Error("Invalid TYPE_CODE_FUNCTION record");
       SmallVector<Type *, 8> ArgTys;
       for (size_t i = 2, e = Record.size(); i != e; ++i) {
         if (Type *T = getTypeByID(Record[i]))
@@ -652,28 +589,28 @@ std::error_code NaClBitcodeReader::ParseTypeTableBody() {
 
       ResultTy = getTypeByID(Record[1]);
       if (ResultTy == 0 || ArgTys.size() < Record.size() - 2)
-        return Error(InvalidType, "invalid type in function type");
+        return Error("invalid type in function type");
 
       ResultTy = FunctionType::get(ResultTy, ArgTys, Record[0]);
       break;
     }
     case naclbitc::TYPE_CODE_VECTOR: { // VECTOR: [numelts, eltty]
       if (Record.size() != 2)
-        return Error(InvalidRecord, "Invalid VECTOR type record");
+        return Error("Invalid VECTOR type record");
       if ((ResultTy = getTypeByID(Record[1])))
         ResultTy = VectorType::get(ResultTy, Record[0]);
       else
-        return Error(InvalidType, "invalid type in vector type");
+        return Error("invalid type in vector type");
       break;
     }
     }
 
     if (NumRecords >= ExpectedNumRecords)
-      return Error(MalformedBlock, "invalid TYPE table");
+      return Error("invalid TYPE table");
     assert(ResultTy && "Didn't read a type?");
     assert(TypeList[NumRecords] == 0 && "Already read type?");
     if (NumRecords == NaClBcIndexSize_t_Max)
-      return Error(InvalidRecord, "Exceeded type index limit");
+      return Error("Exceeded type index limit");
     TypeList[NumRecords++] = ResultTy;
   }
   return std::error_code();
@@ -748,15 +685,12 @@ public:
         Stream.advance(NaClBitstreamCursor::AF_DontPopBlockAtEnd, nullptr);
       switch (Entry.Kind) {
       case NaClBitstreamEntry::SubBlock:
-	return Reader.Error(NaClBitcodeReader::InvalidBlock,
-			    "Invalid block in the global vars block");
+        return Reader.Error("Invalid block in the global vars block");
       case NaClBitstreamEntry::Error:
-        return Reader.Error(NaClBitcodeReader::MalformedBlock,
-                            "Error in the global vars block");
+        return Reader.Error("Error in the global vars block");
       case NaClBitstreamEntry::EndBlock:
         if (ProcessingGlobal || NumGlobals != (NextValueNo - FirstValueNo))
-          return Reader.Error(NaClBitcodeReader::MalformedBlock,
-                              "Error in the global vars block");
+          return Reader.Error("Error in the global vars block");
         return std::error_code();
       case NaClBitstreamEntry::Record:
         // The interesting case.
@@ -768,13 +702,11 @@ public:
       unsigned Bitcode = Stream.readRecord(Entry.ID, Record);
       switch (Bitcode) {
       default:
-        return Reader.Error(NaClBitcodeReader::InvalidValue,
-                            "Unknown global variable entry");
+        return Reader.Error("Unknown global variable entry");
       case naclbitc::GLOBALVAR_VAR:
         // Start the definition of a global variable.
         if (ProcessingGlobal || Record.size() != 2)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Bad GLOBALVAR_VAR record");
+          return Reader.Error("Bad GLOBALVAR_VAR record");
         ProcessingGlobal = true;
         if (std::error_code EC =
             Reader.getAlignmentValue(Record[0], VarAlignment))
@@ -789,21 +721,18 @@ public:
         // Record[0].
         if (!ProcessingGlobal || !VarType.empty() ||
             VarInitializersNeeded != 1 || Record.size() != 1)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Bad GLOBALVAR_COMPOUND record");
+          return Reader.Error("Bad GLOBALVAR_COMPOUND record");
         uint64_t Size = Record[0];
         // Check that ILP32 assumption met.
         if (Size > MaxNaClGlobalVarInits)
-          return Reader.Error(NaClBitcodeReader::InvalidValue,
-                              "Size too big in GLOBALVAR_COMPOUND record");
+          return Reader.Error("Size too big in GLOBALVAR_COMPOUND record");
         VarInitializersNeeded = static_cast<size_t>(Size);
         break;
       }
       case naclbitc::GLOBALVAR_ZEROFILL: {
         // Define a type that defines a sequence of zero-filled bytes.
         if (!ProcessingGlobal || Record.size() != 1)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Bad GLOBALVAR_ZEROFILL record");
+          return Reader.Error("Bad GLOBALVAR_ZEROFILL record");
         VarType.push_back(ArrayType::get(
             Type::getInt8Ty(Context), Record[0]));
         break;
@@ -811,8 +740,7 @@ public:
       case naclbitc::GLOBALVAR_DATA: {
         // Defines a type defined by a sequence of byte values.
         if (!ProcessingGlobal || Record.size() < 1)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Bad GLOBALVAR_DATA record");
+          return Reader.Error("Bad GLOBALVAR_DATA record");
         VarType.push_back(ArrayType::get(
             Type::getInt8Ty(Context), Record.size()));
         break;
@@ -820,18 +748,15 @@ public:
       case naclbitc::GLOBALVAR_RELOC: {
         // Define a relocation initializer type.
         if (!ProcessingGlobal || Record.size() < 1 || Record.size() > 2)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Bad GLOBALVAR_RELOC record");
+          return Reader.Error("Bad GLOBALVAR_RELOC record");
         VarType.push_back(IntegerType::get(Context, 32));
         break;
       }
       case naclbitc::GLOBALVAR_COUNT:
         if (Record.size() != 1 || NumGlobals != 0)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Invalid global count record");
+          return Reader.Error("Invalid global count record");
         if (Record[0] > NaClBcIndexSize_t_Max)
-          return Reader.Error(NaClBitcodeReader::InvalidValue,
-                              "Size too big in global count record");
+          return Reader.Error("Size too big in global count record");
         NumGlobals = static_cast<NaClBcIndexSize_t>(Record[0]);
         break;
       }
@@ -844,7 +769,6 @@ public:
       switch (VarType.size()) {
       case 0:
         return Reader.Error(
-            NaClBitcodeReader::InvalidRecord,
             "No initializer for global variable in global vars block");
       case 1:
         Ty = VarType[0];
@@ -878,15 +802,12 @@ public:
         Stream.advance(NaClBitstreamCursor::AF_DontAutoprocessAbbrevs, nullptr);
       switch (Entry.Kind) {
       case NaClBitstreamEntry::SubBlock:
-	return Reader.Error(NaClBitcodeReader::InvalidBlock,
-			    "Invalid block in the global vars block");
+        return Reader.Error("Invalid block in the global vars block");
       case NaClBitstreamEntry::Error:
-        return Reader.Error(NaClBitcodeReader::MalformedBlock,
-                            "Error in the global vars block");
+        return Reader.Error("Error in the global vars block");
       case NaClBitstreamEntry::EndBlock:
         if (ProcessingGlobal || NumGlobals != (NextValueNo - FirstValueNo))
-          return Reader.Error(NaClBitcodeReader::MalformedBlock,
-                              "Error in the global vars block");
+          return Reader.Error("Error in the global vars block");
         return std::error_code();
       case NaClBitstreamEntry::Record:
         if (Entry.ID == naclbitc::DEFINE_ABBREV) {
@@ -902,8 +823,7 @@ public:
       unsigned Bitcode = Stream.readRecord(Entry.ID, Record);
       switch (Bitcode) {
       default:
-        return Reader.Error(NaClBitcodeReader::InvalidValue,
-                            "Unknown global variable entry 2");
+        return Reader.Error("Unknown global variable entry (pass 2)");
       case naclbitc::GLOBALVAR_VAR:
         // Start the definition of a global variable.
         ProcessingGlobal = true;
@@ -916,8 +836,7 @@ public:
         // Record[0].
         if (!ProcessingGlobal || !VarInit.empty() ||
             VarInitializersNeeded != 1 || Record.size() != 1)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Bad GLOBALVAR_COMPOUND record");
+          return Reader.Error("Bad GLOBALVAR_COMPOUND record");
         // Note: We assume VarInitializersNeeded size was checked
         // in GenerateGlobalVarsPass.
         VarInitializersNeeded = static_cast<size_t>(Record[0]);
@@ -925,8 +844,7 @@ public:
       case naclbitc::GLOBALVAR_ZEROFILL: {
         // Define an initializer that defines a sequence of zero-filled bytes.
         if (!ProcessingGlobal || Record.size() != 1)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Bad GLOBALVAR_ZEROFILL record");
+          return Reader.Error("Bad GLOBALVAR_ZEROFILL record");
         Type *Ty = ArrayType::get(Type::getInt8Ty(Context),
                                   Record[0]);
         Constant *Zero = ConstantAggregateZero::get(Ty);
@@ -936,8 +854,7 @@ public:
       case naclbitc::GLOBALVAR_DATA: {
         // Defines an initializer defined by a sequence of byte values.
         if (!ProcessingGlobal || Record.size() < 1)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Bad GLOBALVAR_DATA record");
+          return Reader.Error("Bad GLOBALVAR_DATA record");
         size_t Size = Record.size();
         uint8_t *Buf = new uint8_t[Size];
         assert(Buf);
@@ -952,8 +869,7 @@ public:
       case naclbitc::GLOBALVAR_RELOC: {
         // Define a relocation initializer.
         if (!ProcessingGlobal || Record.size() < 1 || Record.size() > 2)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Bad GLOBALVAR_RELOC record");
+          return Reader.Error("Bad GLOBALVAR_RELOC record");
         Constant *BaseVal = cast<Constant>(Reader.getFnValueByID(Record[0]));
         Type *IntPtrType = IntegerType::get(Context, 32);
         Constant *Val = ConstantExpr::getPtrToInt(BaseVal, IntPtrType);
@@ -961,8 +877,7 @@ public:
           uint64_t Addend = Record[1];
           // Note: PNaCl is ILP32, so Addend must be uint32_t.
           if (Addend > std::numeric_limits<uint32_t>::max())
-            return Reader.Error(NaClBitcodeReader::InvalidValue,
-                                "Addend of GLOBALVAR_RELOC record too big");
+            return Reader.Error("Addend of GLOBALVAR_RELOC record too big");
           Val = ConstantExpr::getAdd(Val, ConstantInt::get(IntPtrType,
                                                            Addend));
         }
@@ -971,8 +886,7 @@ public:
       }
       case naclbitc::GLOBALVAR_COUNT:
         if (Record.size() != 1)
-          return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                              "Invalid global count record");
+          return Reader.Error("Invalid global count record");
         // Note: NumGlobals should have been set in GenerateGlobalVarsPass.
         // Fail if methods are called in wrong order.
         assert(NumGlobals == Record[0]);
@@ -986,7 +900,7 @@ public:
       Constant *Init = 0;
       switch (VarInit.size()) {
       case 0:
-        return Reader.Error(NaClBitcodeReader::InvalidRecord,
+        return Reader.Error(
             "No initializer for global variable in global vars block");
       case 1:
         Init = VarInit[0];
@@ -997,8 +911,7 @@ public:
       }
       cast<GlobalVariable>(ValueList[NextValueNo])->setInitializer(Init);
       if (NextValueNo == NaClBcIndexSize_t_Max)
-        return Reader.Error(NaClBitcodeReader::InvalidRecord,
-                            "Exceeded value index limit");
+        return Reader.Error("Exceeded value index limit");
       ++NextValueNo;
       ProcessingGlobal = false;
       VarInitializersNeeded = 0;
@@ -1010,7 +923,7 @@ public:
 
 std::error_code NaClBitcodeReader::ParseGlobalVars() {
   if (Stream.EnterSubBlock(naclbitc::GLOBALVAR_BLOCK_ID))
-    return Error(InvalidRecord, "Malformed block record");
+    return Error("Malformed block record");
 
   ParseGlobalsHandler PassHandler(*this, ValueList, Stream, Context, TheModule);
   if (std::error_code EC = PassHandler.GenerateGlobalVarsPass())
@@ -1021,7 +934,7 @@ std::error_code NaClBitcodeReader::ParseGlobalVars() {
 std::error_code NaClBitcodeReader::ParseValueSymbolTable() {
   DEBUG(dbgs() << "-> ParseValueSymbolTable\n");
   if (Stream.EnterSubBlock(naclbitc::VALUE_SYMTAB_BLOCK_ID))
-    return Error(InvalidRecord, "Malformed block record");
+    return Error("Malformed block record");
 
   SmallVector<uint64_t, 64> Record;
 
@@ -1032,10 +945,9 @@ std::error_code NaClBitcodeReader::ParseValueSymbolTable() {
 
     switch (Entry.Kind) {
     case NaClBitstreamEntry::SubBlock:
-      return Error(InvalidBlock,
-                   "Invalid block in the value symbol table block");
+      return Error("Invalid block in the value symbol table block");
     case NaClBitstreamEntry::Error:
-      return Error(MalformedBlock, "malformed value symbol table block");
+      return Error("malformed value symbol table block");
     case NaClBitstreamEntry::EndBlock:
       DEBUG(dbgs() << "<- ParseValueSymbolTable\n");
       return std::error_code();
@@ -1051,10 +963,10 @@ std::error_code NaClBitcodeReader::ParseValueSymbolTable() {
       break;
     case naclbitc::VST_CODE_ENTRY: {  // VST_ENTRY: [valueid, namechar x N]
       if (ConvertToString(Record, 1, ValueName))
-        return Error(InvalidRecord, "Invalid VST_ENTRY record");
+        return Error("Invalid VST_ENTRY record");
       Value *V = getFnValueByID(Record[0]);
       if (V == nullptr)
-        return Error(InvalidValue, "Invalid Value ID in VST_ENTRY record");
+        return Error("Invalid Value ID in VST_ENTRY record");
 
       V->setName(StringRef(ValueName.data(), ValueName.size()));
       ValueName.clear();
@@ -1062,10 +974,10 @@ std::error_code NaClBitcodeReader::ParseValueSymbolTable() {
     }
     case naclbitc::VST_CODE_BBENTRY: {
       if (ConvertToString(Record, 1, ValueName))
-        return Error(InvalidRecord, "Invalid VST_BBENTRY record");
+        return Error("Invalid VST_BBENTRY record");
       BasicBlock *BB = getBasicBlock(Record[0]);
       if (BB == 0)
-        return Error(InvalidValue, "Invalid BB ID in VST_BBENTRY record");
+        return Error("Invalid BB ID in VST_BBENTRY record");
 
       BB->setName(StringRef(ValueName.data(), ValueName.size()));
       ValueName.clear();
@@ -1078,7 +990,7 @@ std::error_code NaClBitcodeReader::ParseValueSymbolTable() {
 std::error_code NaClBitcodeReader::ParseConstants() {
   DEBUG(dbgs() << "-> ParseConstants\n");
   if (Stream.EnterSubBlock(naclbitc::CONSTANTS_BLOCK_ID))
-    return Error(InvalidRecord, "Malformed block record");
+    return Error("Malformed block record");
 
   SmallVector<uint64_t, 64> Record;
 
@@ -1090,13 +1002,12 @@ std::error_code NaClBitcodeReader::ParseConstants() {
 
     switch (Entry.Kind) {
     case NaClBitstreamEntry::SubBlock:
-      return Error(InvalidBlock, "Invalid block in function constants block");
+      return Error("Invalid block in function constants block");
     case NaClBitstreamEntry::Error:
-      return Error(MalformedBlock, "malformed function constants block");
+      return Error("malformed function constants block");
     case NaClBitstreamEntry::EndBlock:
       if (NextCstNo != ValueList.size())
-        return Error(InvalidConstantReference,
-                     "Invalid constant reference!");
+        return Error("Invalid constant reference!");
       DEBUG(dbgs() << "<- ParseConstants\n");
       return std::error_code();
     case NaClBitstreamEntry::Record:
@@ -1113,29 +1024,26 @@ std::error_code NaClBitcodeReader::ParseConstants() {
       std::string Message;
       raw_string_ostream StrM(Message);
       StrM << "Invalid Constant code: " << BitCode;
-      StrM.flush();
-      return Error(InvalidValue, Message);
+      return Error(StrM.str());
     }
     case naclbitc::CST_CODE_UNDEF:     // UNDEF
       V = UndefValue::get(CurTy);
       break;
     case naclbitc::CST_CODE_SETTYPE:   // SETTYPE: [typeid]
       if (Record.empty())
-        return Error(NaClBitcodeReader::InvalidRecord,
-                     "Malformed CST_SETTYPE record");
+        return Error("Malformed CST_SETTYPE record");
       if (Record[0] >= TypeList.size())
-        return Error(NaClBitcodeReader::InvalidType,
-                     "Invalid Type ID in CST_SETTYPE record");
+        return Error("Invalid Type ID in CST_SETTYPE record");
       CurTy = TypeList[Record[0]];
       continue;  // Skip the ValueList manipulation.
     case naclbitc::CST_CODE_INTEGER:   // INTEGER: [intval]
       if (!CurTy->isIntegerTy() || Record.empty())
-        return Error(InvalidRecord, "Invalid CST_INTEGER record");
+        return Error("Invalid CST_INTEGER record");
       V = ConstantInt::get(CurTy, NaClDecodeSignRotatedValue(Record[0]));
       break;
     case naclbitc::CST_CODE_FLOAT: {    // FLOAT: [fpval]
       if (Record.empty())
-        return Error(NaClBitcodeReader::InvalidRecord, "Invalid FLOAT record");
+        return Error("Invalid FLOAT record");
       if (CurTy->isFloatTy())
         V = ConstantFP::get(Context, APFloat(APFloat::IEEEsingle,
                                              APInt(32, (uint32_t)Record[0])));
@@ -1143,8 +1051,7 @@ std::error_code NaClBitcodeReader::ParseConstants() {
         V = ConstantFP::get(Context, APFloat(APFloat::IEEEdouble,
                                              APInt(64, Record[0])));
       else
-        return Error(NaClBitcodeReader::InvalidRecord,
-                     "Unknown type for FLOAT record");
+        return Error("Unknown type for FLOAT record");
       break;
     }
     }
@@ -1161,8 +1068,7 @@ std::error_code NaClBitcodeReader::RememberAndSkipFunctionBody() {
   DEBUG(dbgs() << "-> RememberAndSkipFunctionBody\n");
   // Get the function we are talking about.
   if (FunctionsWithBodies.empty())
-    return Error(InsufficientFunctionProtos,
-                 "Insufficient function protos");
+    return Error("Insufficient function protos");
 
   Function *Fn = FunctionsWithBodies.back();
   FunctionsWithBodies.pop_back();
@@ -1173,7 +1079,7 @@ std::error_code NaClBitcodeReader::RememberAndSkipFunctionBody() {
 
   // Skip over the function block for now.
   if (Stream.SkipBlock())
-    return Error(InvalidSkippedBlock, "Unable to skip function block.");
+    return Error("Unable to skip function block.");
   DEBUG(dbgs() << "<- RememberAndSkipFunctionBody\n");
   return std::error_code();
 }
@@ -1254,7 +1160,7 @@ std::error_code NaClBitcodeReader::ParseModule(bool Resume) {
   if (Resume)
     Stream.JumpToBit(NextUnreadBit);
   else if (Stream.EnterSubBlock(naclbitc::MODULE_BLOCK_ID))
-    return Error(InvalidRecord, "Malformed block record");
+    return Error("Malformed block record");
 
   SmallVector<uint64_t, 64> Record;
 
@@ -1264,13 +1170,13 @@ std::error_code NaClBitcodeReader::ParseModule(bool Resume) {
 
     switch (Entry.Kind) {
     case NaClBitstreamEntry::Error:
-      return Error(MalformedBlock, "malformed module block");
+      return Error("malformed module block");
     case NaClBitstreamEntry::EndBlock:
       DEBUG(dbgs() << "<- ParseModule\n");
       if (std::error_code EC = GlobalCleanup())
         return EC;
       if (!Stream.AtEndOfStream())
-        return Error(InvalidDataAfterModule, "Invalid data after module");
+        return Error("Invalid data after module");
       return std::error_code();
     case NaClBitstreamEntry::SubBlock:
       switch (Entry.ID) {
@@ -1278,11 +1184,11 @@ std::error_code NaClBitcodeReader::ParseModule(bool Resume) {
         std::string Message;
         raw_string_ostream StrM(Message);
         StrM << "Unknown block ID: " << Entry.ID;
-        return Error(InvalidRecord, StrM.str());
+        return Error(StrM.str());
       }
       case naclbitc::BLOCKINFO_BLOCK_ID:
         if (Stream.ReadBlockInfoBlock(0))
-          return Error(MalformedBlock, "Malformed BlockInfoBlock");
+          return Error("Malformed BlockInfoBlock");
         break;
       case naclbitc::TYPE_BLOCK_ID_NEW:
         if (std::error_code EC = ParseTypeTable())
@@ -1341,41 +1247,39 @@ std::error_code NaClBitcodeReader::ParseModule(bool Resume) {
       raw_string_ostream StrM(Message);
       StrM << "Invalid MODULE_CODE: " << Selector;
       StrM.flush();
-      return Error(InvalidValue, Message);
+      return Error(Message);
     }
     case naclbitc::MODULE_CODE_VERSION: {  // VERSION: [version#]
       if (Record.size() < 1)
-        return Error(InvalidRecord, "Malformed MODULE_CODE_VERSION");
+        return Error("Malformed MODULE_CODE_VERSION");
       // Only version #1 is supported for PNaCl. Version #0 is not supported.
       uint64_t module_version = Record[0];
       if (module_version != 1)
-        return Error(InvalidValue, "Unknown bitstream version!");
+        return Error("Unknown bitstream version!");
       break;
     }
     // FUNCTION:  [type, callingconv, isproto, linkage]
     case naclbitc::MODULE_CODE_FUNCTION: {
       if (Record.size() < 4)
-        return Error(InvalidRecord, "Invalid MODULE_CODE_FUNCTION record");
+        return Error("Invalid MODULE_CODE_FUNCTION record");
       Type *Ty = getTypeByID(Record[0]);
       if (!Ty)
-        return Error(InvalidType, "Invalid MODULE_CODE_FUNCTION record");
+        return Error("Invalid MODULE_CODE_FUNCTION record");
       FunctionType *FTy = dyn_cast<FunctionType>(Ty);
       if (!FTy)
-        return Error(InvalidType,
-                     "Function not declared with a function type!");
+        return Error("Function not declared with a function type!");
 
       Function *Func = Function::Create(FTy, GlobalValue::ExternalLinkage,
                                         "", TheModule);
 
       CallingConv::ID CallingConv;
       if (!naclbitc::DecodeCallingConv(Record[1], CallingConv))
-        return Error(InvalidValue,
-                     "PNaCl bitcode contains invalid calling conventions.");
+        return Error("PNaCl bitcode contains invalid calling conventions.");
       Func->setCallingConv(CallingConv);
       bool isProto = Record[2];
       GlobalValue::LinkageTypes Linkage;
       if (!naclbitc::DecodeLinkage(Record[3], Linkage))
-        return Error(InvalidValue, "Unknown linkage type");
+        return Error("Unknown linkage type");
       Func->setLinkage(Linkage);
       ValueList.push_back(Func);
 
@@ -1420,7 +1324,7 @@ std::error_code NaClBitcodeReader::ParseBitcodeInto(Module *M) {
 
     switch (Entry.Kind) {
     case NaClBitstreamEntry::Error:
-      return Error(MalformedBlock, "malformed module file");
+      return Error("malformed module file");
     case NaClBitstreamEntry::EndBlock:
       return std::error_code();
 
@@ -1429,8 +1333,7 @@ std::error_code NaClBitcodeReader::ParseBitcodeInto(Module *M) {
       case naclbitc::MODULE_BLOCK_ID:
         // Reject multiple MODULE_BLOCK's in a single bitstream.
         if (TheModule)
-          return Error(InvalidMultipleBlocks,
-                       "Multiple MODULE_BLOCKs in same stream");
+          return Error("Multiple MODULE_BLOCKs in same stream");
         TheModule = M;
         if (std::error_code EC = ParseModule(false))
           return EC;
@@ -1438,13 +1341,13 @@ std::error_code NaClBitcodeReader::ParseBitcodeInto(Module *M) {
           return std::error_code();
         break;
       default:
-        return Error(InvalidBlock, "Invalid top-level block found.");
+        return Error("Invalid top-level block found.");
         break;
       }
       continue;
     case NaClBitstreamEntry::Record:
       // There should be no records in the top-level of blocks.
-      return Error(InvalidRecord, "Invalid record at top-level");
+      return Error("Invalid record at top-level");
     }
   }
 }
@@ -1456,8 +1359,7 @@ std::error_code NaClBitcodeReader::InstallInstruction(
   // this file.
   if (BB == 0) {
     delete I;
-    return Error(InvalidInstructionWithNoBB,
-                 "Instruction with no BB, can't install");
+    return Error("Instruction with no BB, can't install");
   }
   BB->getInstList().push_back(I);
   return std::error_code();
@@ -1521,7 +1423,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
   DEBUG(dbgs() << "-> ParseFunctionBody\n");
   unsigned NumWordsInFunction = 0;
   if (Stream.EnterSubBlock(naclbitc::FUNCTION_BLOCK_ID, &NumWordsInFunction))
-    return Error(InvalidRecord, "Malformed block record");
+    return Error("Malformed block record");
   uint64_t NumBytesInFunction =
       NumWordsInFunction * naclbitc::BitstreamWordSize;
   // Defines the maximum number of records that can occur in the
@@ -1546,14 +1448,14 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
 
     switch (Entry.Kind) {
     case NaClBitstreamEntry::Error:
-      return Error(MalformedBlock, "Bitcode error in function block");
+      return Error("Bitcode error in function block");
     case NaClBitstreamEntry::EndBlock:
       goto OutOfRecordLoop;
 
     case NaClBitstreamEntry::SubBlock:
       switch (Entry.ID) {
       default:
-        return Error(InvalidBlock, "Invalid block in function block");
+        return Error("Invalid block in function block");
         break;
       case naclbitc::CONSTANTS_BLOCK_ID:
         if (std::error_code EC = ParseConstants())
@@ -1565,7 +1467,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
           if (std::error_code EC = ParseValueSymbolTable())
             return EC;
         } else {
-          return Error(InvalidRecord, "Local value symbol tables not allowed");
+          return Error("Local value symbol tables not allowed");
         }
         break;
       }
@@ -1589,12 +1491,12 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
         StrM << " " << Record[I];
       }
       StrM << ">";
-      return Error(InvalidRecord, StrM.str());
+      return Error(StrM.str());
     }
 
     case naclbitc::FUNC_CODE_DECLAREBLOCKS:     // DECLAREBLOCKS: [nblocks]
       if (Record.size() != 1 || Record[0] == 0)
-        return Error(InvalidRecord, "Invalid DECLAREBLOCKS record");
+        return Error("Invalid DECLAREBLOCKS record");
       // Check for bad large sizes, since they can make ridiculous memory
       // requests and hang the user for large amounts of time.
       if (Record[0] > MaxRecordsInFunction) {
@@ -1603,7 +1505,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
         StrBuf << "Function defines " << Record[0]
                << " basic blocks, which is too big for a function containing "
                << NumBytesInFunction << " bytes";
-        return Error(InvalidValue, StrBuf.str());
+        return Error(StrBuf.str());
       }
       // Create all the basic blocks for the function.
       FunctionBBs.resize(Record[0]);
@@ -1623,14 +1525,14 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       if (popValue(Record, &OpNum, NextValueNo, &LHS) ||
           popValue(Record, &OpNum, NextValueNo, &RHS) ||
           OpNum+1 > Record.size())
-        return Error(InvalidRecord, "Invalid BINOP record");
+        return Error("Invalid BINOP record");
 
       LHS = ConvertOpToScalar(LHS, CurBBNo);
       RHS = ConvertOpToScalar(RHS, CurBBNo);
 
       Instruction::BinaryOps Opc;
       if (!naclbitc::DecodeBinaryOpcode(Record[OpNum++], LHS->getType(), Opc))
-        return Error(InvalidValue, "Invalid binary opcode in BINOP record");
+        return Error("Invalid binary opcode in BINOP record");
       I = BinaryOperator::Create(Opc, LHS, RHS);
       break;
     }
@@ -1639,14 +1541,14 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       Value *Op;
       if (popValue(Record, &OpNum, NextValueNo, &Op) ||
           OpNum+2 != Record.size())
-        return Error(InvalidRecord, "Invalid CAST record: bad record size");
+        return Error("Invalid CAST record: bad record size");
 
       Type *ResTy = getTypeByID(Record[OpNum]);
       if (ResTy == 0)
-        return Error(InvalidType, "Invalid CAST record: bad type ID");
+        return Error("Invalid CAST record: bad type ID");
       Instruction::CastOps Opc;
       if (!naclbitc::DecodeCastOpcode(Record[OpNum+1], Opc)) {
-        return Error(InvalidValue, "Invalid CAST record: bad opcode");
+        return Error("Invalid CAST record: bad opcode");
       }
 
       // If a ptrtoint cast was elided on the argument of the cast,
@@ -1677,7 +1579,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
           popValue(Record, &OpNum, NextValueNo, &FalseVal) ||
           popValue(Record, &OpNum, NextValueNo, &Cond) ||
           OpNum != Record.size())
-        return Error(InvalidRecord, "Invalid SELECT record");
+        return Error("Invalid SELECT record");
 
       TrueVal = ConvertOpToScalar(TrueVal, CurBBNo);
       FalseVal = ConvertOpToScalar(FalseVal, CurBBNo);
@@ -1687,12 +1589,11 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
           dyn_cast<VectorType>(Cond->getType())) {
         // expect <n x i1>
         if (vector_type->getElementType() != Type::getInt1Ty(Context))
-          return Error(InvalidTypeForValue,
-                       "Invalid SELECT vector condition type");
+          return Error("Invalid SELECT vector condition type");
       } else {
         // expect i1
         if (Cond->getType() != Type::getInt1Ty(Context))
-          return Error(InvalidTypeForValue, "Invalid SELECT condition type");
+          return Error("Invalid SELECT condition type");
       }
 
       I = SelectInst::Create(Cond, TrueVal, FalseVal);
@@ -1704,11 +1605,11 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       Value *Vec, *Idx;
       if (popValue(Record, &OpNum, NextValueNo, &Vec) ||
           popValue(Record, &OpNum, NextValueNo, &Idx) || OpNum != Record.size())
-        return Error(InvalidRecord, "Invalid EXTRACTELEMENT record");
+        return Error("Invalid EXTRACTELEMENT record");
 
       // expect i32
       if (Idx->getType() != Type::getInt32Ty(Context))
-        return Error(InvalidTypeForValue, "Invalid EXTRACTELEMENT index type");
+        return Error("Invalid EXTRACTELEMENT index type");
 
       I = ExtractElementInst::Create(Vec, Idx);
       break;
@@ -1720,18 +1621,17 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       if (popValue(Record, &OpNum, NextValueNo, &Vec) ||
           popValue(Record, &OpNum, NextValueNo, &Elt) ||
           popValue(Record, &OpNum, NextValueNo, &Idx) || OpNum != Record.size())
-        return Error(InvalidRecord, "Invalid INSERTELEMENT record");
+        return Error("Invalid INSERTELEMENT record");
 
       // expect vector type
       if (!isa<VectorType>(Vec->getType()))
-        return Error(InvalidTypeForValue, "Invalid INSERTELEMENT vector type");
+        return Error("Invalid INSERTELEMENT vector type");
       // match vector and element types
       if (cast<VectorType>(Vec->getType())->getElementType() != Elt->getType())
-        return Error(InvalidTypeForValue,
-                     "Mismatched INSERTELEMENT vector and element type");
+        return Error("Mismatched INSERTELEMENT vector and element type");
       // expect i32
       if (Idx->getType() != Type::getInt32Ty(Context))
-        return Error(InvalidTypeForValue, "Invalid INSERTELEMENT index type");
+        return Error("Invalid INSERTELEMENT index type");
 
       I = InsertElementInst::Create(Vec, Elt, Idx);
       break;
@@ -1745,7 +1645,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       if (popValue(Record, &OpNum, NextValueNo, &LHS) ||
           popValue(Record, &OpNum, NextValueNo, &RHS) ||
           OpNum+1 != Record.size())
-        return Error(InvalidRecord, "Invalid CMP record");
+        return Error("Invalid CMP record");
 
       LHS = ConvertOpToScalar(LHS, CurBBNo);
       RHS = ConvertOpToScalar(RHS, CurBBNo);
@@ -1754,13 +1654,11 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       if (LHS->getType()->isFPOrFPVectorTy()) {
         if (!naclbitc::DecodeFcmpPredicate(Record[OpNum], Predicate))
           return Error(
-              InvalidValue,
               "PNaCl bitcode contains invalid floating comparison predicate");
         I = new FCmpInst(Predicate, LHS, RHS);
       } else {
         if (!naclbitc::DecodeIcmpPredicate(Record[OpNum], Predicate))
           return Error(
-              InvalidValue,
               "PNaCl bitcode contains invalid integer comparison predicate");
         I = new ICmpInst(Predicate, LHS, RHS);
       }
@@ -1778,19 +1676,19 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
         size_t OpNum = 0;
         Value *Op = NULL;
         if (popValue(Record, &OpNum, NextValueNo, &Op))
-          return Error(InvalidRecord, "Invalid RET record");
+          return Error("Invalid RET record");
         if (OpNum != Record.size())
-          return Error(InvalidRecord, "Invalid RET record");
+          return Error("Invalid RET record");
 
         I = ReturnInst::Create(Context, ConvertOpToScalar(Op, CurBBNo));
         break;
       }
     case naclbitc::FUNC_CODE_INST_BR: { // BR: [bb#, bb#, opval] or [bb#]
       if (Record.size() != 1 && Record.size() != 3)
-        return Error(InvalidRecord, "Invalid BR record");
+        return Error("Invalid BR record");
       BasicBlock *TrueDest = getBasicBlock(Record[0]);
       if (TrueDest == 0)
-        return Error(InvalidRecord, "Invalid BR record");
+        return Error("Invalid BR record");
 
       if (Record.size() == 1) {
         I = BranchInst::Create(TrueDest);
@@ -1799,13 +1697,13 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
         BasicBlock *FalseDest = getBasicBlock(Record[1]);
         Value *Cond = getValue(Record, 2, NextValueNo);
         if (FalseDest == 0 || Cond == 0)
-          return Error(InvalidValue, "Invalid BR record");
+          return Error("Invalid BR record");
         if (!Cond->getType()->isIntegerTy(1)) {
           std::string Buffer;
           raw_string_ostream StrBuf(Buffer);
           StrBuf << "Type of branch condition not i1. Found: "
                  << *Cond->getType() << "\n";
-          return Error(InvalidValue, StrBuf.str());
+          return Error(StrBuf.str());
         }
         I = BranchInst::Create(TrueDest, FalseDest, Cond);
       }
@@ -1813,17 +1711,16 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
     }
     case naclbitc::FUNC_CODE_INST_SWITCH: { // SWITCH: [opty, op0, op1, ...]
       if (Record.size() < 4)
-        return Error(InvalidRecord, "Invalid SWITCH record");
+        return Error("Invalid SWITCH record");
       Type *OpTy = getTypeByID(Record[0]);
       unsigned ValueBitWidth = cast<IntegerType>(OpTy)->getBitWidth();
       if (ValueBitWidth > 64)
-        return Error(InvalidValue,
-                     "Wide integers are not supported in PNaCl bitcode");
+        return Error("Wide integers are not supported in PNaCl bitcode");
 
       Value *Cond = getValue(Record, 1, NextValueNo);
       BasicBlock *Default = getBasicBlock(Record[2]);
       if (OpTy == 0 || Cond == 0 || Default == 0)
-        return Error(InvalidRecord, "Invalid SWITCH record");
+        return Error("Invalid SWITCH record");
 
       Cond = ConvertOpToScalar(Cond, CurBBNo);
       // TODO(kschimpf): Deal with values that are too large for NumCases.
@@ -1839,19 +1736,17 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
         // no-one produced them.
         // See https://code.google.com/p/nativeclient/issues/detail?id=3758
         if (CurIdx + 3 >= Record.size())
-          return Error(InvalidRecord,
-                       "Incomplete case entry in SWITCH record");
+          return Error("Incomplete case entry in SWITCH record");
         uint64_t NumItems = Record[CurIdx++];
         bool isSingleNumber = Record[CurIdx++];
         if (NumItems != 1 || !isSingleNumber)
-          return Error(InvalidRecord,
-                       "Case ranges are not supported in PNaCl bitcode");
+          return Error("Case ranges are not supported in PNaCl bitcode");
 
         APInt CaseValue(ValueBitWidth,
                         NaClDecodeSignRotatedValue(Record[CurIdx++]));
         BasicBlock *DestBB = getBasicBlock(Record[CurIdx++]);
         if (DestBB == nullptr)
-          return Error(InvalidValue, "Invalid branch in SWITCH case");
+          return Error("Invalid branch in SWITCH case");
         SI->addCase(ConstantInt::get(Context, CaseValue), DestBB);
       }
       I = SI.release();
@@ -1862,9 +1757,10 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       break;
     case naclbitc::FUNC_CODE_INST_PHI: { // PHI: [ty, val0,bb0, ...]
       if (Record.size() < 1 || ((Record.size()-1)&1))
-        return Error(InvalidRecord, "Invalid PHI record");
+        return Error("Invalid PHI record");
       Type *Ty = getTypeByID(Record[0]);
-      if (!Ty) return Error(InvalidType, "Invalid PHI record");
+      if (!Ty)
+        return Error("Invalid PHI record");
 
       PHINode *PN = PHINode::Create(Ty, (Record.size()-1)/2);
 
@@ -1877,7 +1773,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
         NaClBcIndexSize_t BBIndex = Record[2+i];
         BasicBlock *BB = getBasicBlock(BBIndex);
         if (!V || !BB)
-          return Error(InvalidValue, "Invalid PHI record");
+          return Error("Invalid PHI record");
         if (Ty == IntPtrType) {
           // Delay installing scalar casts until all instructions of
           // the function are rendered. This guarantees that we insert
@@ -1893,11 +1789,11 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
 
     case naclbitc::FUNC_CODE_INST_ALLOCA: { // ALLOCA: [op, align]
       if (Record.size() != 2)
-        return Error(InvalidRecord, "Invalid ALLOCA record");
+        return Error("Invalid ALLOCA record");
       Value *Size;
       size_t OpNum = 0;
       if (popValue(Record, &OpNum, NextValueNo, &Size))
-        return Error(InvalidRecord, "Invalid ALLOCA record");
+        return Error("Invalid ALLOCA record");
       unsigned Alignment;
       if (std::error_code EC = getAlignmentValue(Record[1], Alignment))
         return EC;
@@ -1910,15 +1806,15 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       Value *Op;
       if (popValue(Record, &OpNum, NextValueNo, &Op) ||
           Record.size() != 3)
-        return Error(InvalidRecord, "Invalid LOAD record");
+        return Error("Invalid LOAD record");
 
       // Add pointer cast to op.
       Type *T = getTypeByID(Record[2]);
       if (T == nullptr)
-        return Error(InvalidType, "Invalid type for load instruction");
+        return Error("Invalid type for load instruction");
       Op = ConvertOpToType(Op, T->getPointerTo(), CurBBNo);
       if (Op == nullptr)
-        return Error(InvalidTypeForValue, "Can't convert cast to type");
+        return Error("Can't convert cast to type");
       unsigned Alignment;
       if (std::error_code EC = getAlignmentValue(Record[OpNum], Alignment))
         return EC;
@@ -1932,11 +1828,11 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       if (popValue(Record, &OpNum, NextValueNo, &Ptr) ||
           popValue(Record, &OpNum, NextValueNo, &Val) ||
           OpNum+1 != Record.size())
-        return Error(InvalidRecord, "Invalid STORE record");
+        return Error("Invalid STORE record");
       Val = ConvertOpToScalar(Val, CurBBNo);
       Ptr = ConvertOpToType(Ptr, Val->getType()->getPointerTo(), CurBBNo);
       if (Ptr == nullptr)
-        return Error(InvalidTypeForValue, "Can't convert cast to type");
+        return Error("Can't convert cast to type");
       unsigned Alignment;
       if (std::error_code EC = getAlignmentValue(Record[OpNum], Alignment))
        return EC;
@@ -1950,14 +1846,14 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       if ((Record.size() < 2) ||
           (BitCode == naclbitc::FUNC_CODE_INST_CALL_INDIRECT &&
            Record.size() < 3))
-        return Error(InvalidRecord, "Invalid CALL record");
+        return Error("Invalid CALL record");
 
       unsigned CCInfo = Record[0];
 
       size_t OpNum = 1;
       Value *Callee;
       if (popValue(Record, &OpNum, NextValueNo, &Callee))
-        return Error(InvalidRecord, "Invalid CALL record");
+        return Error("Invalid CALL record");
 
       // Build function type for call.
       FunctionType *FTy = 0;
@@ -1972,12 +1868,12 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
           FTy = dyn_cast<FunctionType>(OpTy->getElementType());
         }
         if (FTy == 0)
-          return Error(InvalidType, "Invalid type for CALL record");
+          return Error("Invalid type for CALL record");
       }
 
       size_t NumParams = Record.size() - OpNum;
       if (FTy && NumParams != FTy->getNumParams())
-        return Error(InvalidRecord, "Invalid CALL record");
+        return Error("Invalid CALL record");
 
       // Process call arguments.
       SmallVector<Value*, 6> Args;
@@ -1987,7 +1883,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
           std::string Buffer;
           raw_string_ostream StrBuf(Buffer);
           StrBuf << "Invalid call argument: Index " << Index;
-          return Error(InvalidValue, StrBuf.str());
+          return Error(StrBuf.str());
         }
         if (FTy) {
           // Add a cast, to a pointer type if necessary, in case this
@@ -2000,7 +1896,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
           std::string Buffer;
           raw_string_ostream StrBuf(Buffer);
           StrBuf << "Unable to cast call argument to parameter type: " << Index;
-          return Error(InvalidValue, StrBuf.str());
+          return Error(StrBuf.str());
         }
         Args.push_back(Arg);
       }
@@ -2019,8 +1915,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       I = CallInst::Create(Callee, Args);
       CallingConv::ID CallingConv;
       if (!naclbitc::DecodeCallingConv(CCInfo>>1, CallingConv))
-        return Error(InvalidValue,
-                     "PNaCl bitcode contains invalid calling conventions.");
+        return Error("PNaCl bitcode contains invalid calling conventions.");
       cast<CallInst>(I)->setCallingConv(CallingConv);
       cast<CallInst>(I)->setTailCall(CCInfo & 1);
       break;
@@ -2029,7 +1924,7 @@ std::error_code NaClBitcodeReader::ParseFunctionBody(Function *F) {
       // Build corresponding forward reference.
       if (Record.size() != 2 ||
           ValueList.createValueFwdRef(Record[0], getTypeByID(Record[1])))
-        return Error(InvalidRecord, "Invalid FORWARDTYPEREF record");
+        return Error("Invalid FORWARDTYPEREF record");
       continue;
     }
 
@@ -2084,16 +1979,16 @@ OutOfRecordLoop:
           delete A;
         }
       }
-      return Error(InvalidValue, "Never resolved value found in function!");
+      return Error("Never resolved value found in function!");
     }
   }
 
   if (CurBBNo != FunctionBBs.size()) {
     std::string Buffer;
     raw_string_ostream StrBuf(Buffer);
-    StrBuf << "Declared " << FunctionBBs.size()
-           << " basic blocks. Found: " << CurBBNo;
-    return Error(MalformedBlock, StrBuf.str());
+    StrBuf << "Declared " << FunctionBBs.size() << " basic blocks. Found: "
+           << CurBBNo;
+    return Error(StrBuf.str());
   }
 
   // Trim the value list down to the size it was before we parsed this function.
@@ -2109,8 +2004,7 @@ std::error_code NaClBitcodeReader::FindFunctionInStream(
     DenseMap<Function*, uint64_t>::iterator DeferredFunctionInfoIterator) {
   while (DeferredFunctionInfoIterator->second == 0) {
     if (Stream.AtEndOfStream())
-      return Error(CouldNotFindFunctionInStream,
-                   "Could not find Function in stream");
+      return Error("Could not find Function in stream");
     // ParseModule will parse the next body in the stream and set its
     // position in the DeferredFunctionInfo map.
     if (std::error_code EC = ParseModule(true))
@@ -2243,14 +2137,13 @@ std::error_code NaClBitcodeReader::InitStreamFromBuffer() {
   const unsigned char *BufEnd = BufPtr+Buffer->getBufferSize();
 
   if (Buffer->getBufferSize() & 3)
-    return Error(InvalidBitstream,
-                 "Bitcode stream should be a multiple of 4 bytes in length");
+    return Error("Bitcode stream should be a multiple of 4 bytes in length");
 
   if (Header.Read(BufPtr, BufEnd))
-    return Error(InvalidBitstream, Header.Unsupported());
+    return Error(Header.Unsupported());
 
   if (AcceptHeader())
-    return Error(InvalidBitstream, Header.Unsupported());
+    return Error(Header.Unsupported());
 
   StreamFile.reset(new NaClBitstreamReader(BufPtr, BufEnd, Header));
   Stream.init(StreamFile.get());
@@ -2260,10 +2153,10 @@ std::error_code NaClBitcodeReader::InitStreamFromBuffer() {
 
 std::error_code NaClBitcodeReader::InitLazyStream() {
   if (Header.Read(LazyStreamer))
-    return Error(InvalidBitstream, Header.Unsupported());
+    return Error(Header.Unsupported());
 
   if (AcceptHeader())
-    return Error(InvalidBitstream, Header.Unsupported());
+    return Error(Header.Unsupported());
 
   StreamFile.reset(new NaClBitstreamReader(LazyStreamer, Header));
   Stream.init(StreamFile.get());
@@ -2285,6 +2178,26 @@ const char *llvm::PNaClDataLayout =
     "e-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-"
     "f32:32:32-f64:64:64-p:32:32:32-v128:32:32";
 
+DiagnosticHandlerFunction
+llvm::redirectNaClDiagnosticToStream(raw_ostream &Out) {
+  return [&](const DiagnosticInfo &DI) {
+    switch (DI.getSeverity()) {
+    case DS_Error:
+      Out << "Error: ";
+      break;
+    case DS_Warning:
+      Out << "Warning: ";
+    case DS_Remark:
+    case DS_Note:
+      break;
+    }
+    // Now print diagnostic error message.
+    DiagnosticPrinterRawOStream Printer(Out);
+    DI.print(Printer);
+    Out << "\n";
+  };
+}
+
 /// \brief Get a lazy one-at-time loading module from bitcode.
 ///
 /// This isn't always used in a lazy context.  In particular, it's also used by
@@ -2292,11 +2205,11 @@ const char *llvm::PNaClDataLayout =
 /// NaCl does not support BlockAddresses, so it does not need to materialize
 /// forward-referenced functions from block address references.
 ErrorOr<Module *> llvm::getNaClLazyBitcodeModule(
-    std::unique_ptr<MemoryBuffer> &&Buffer, LLVMContext& Context,
-    raw_ostream *Verbose, bool AcceptSupportedOnly) {
+    std::unique_ptr<MemoryBuffer> &&Buffer, LLVMContext &Context,
+    DiagnosticHandlerFunction DiagnosticHandler, bool AcceptSupportedOnly) {
   Module *M = new Module(Buffer->getBufferIdentifier(), Context);
-  NaClBitcodeReader *R =
-      new NaClBitcodeReader(Buffer.get(), Context, Verbose, AcceptSupportedOnly);
+  NaClBitcodeReader *R = new NaClBitcodeReader(
+      Buffer.get(), Context, DiagnosticHandler, AcceptSupportedOnly);
   M->setMaterializer(R);
 
   auto cleanupOnError = [&](std::error_code EC) {
@@ -2312,17 +2225,13 @@ ErrorOr<Module *> llvm::getNaClLazyBitcodeModule(
   return M;
 }
 
-
-Module *llvm::getNaClStreamedBitcodeModule(const std::string &name,
-                                           StreamingMemoryObject *Streamer,
-                                           LLVMContext &Context,
-                                           raw_ostream *Verbose,
-                                           std::string *ErrMsg,
-                                           bool AcceptSupportedOnly) {
+Module *llvm::getNaClStreamedBitcodeModule(
+    const std::string &name, StreamingMemoryObject *Streamer,
+    LLVMContext &Context, DiagnosticHandlerFunction DiagnosticHandler,
+    std::string *ErrMsg, bool AcceptSupportedOnly) {
   Module *M = new Module(name, Context);
-  NaClBitcodeReader *R =
-      new NaClBitcodeReader(Streamer, Context, Verbose,
-                            AcceptSupportedOnly);
+  NaClBitcodeReader *R = new NaClBitcodeReader(
+      Streamer, Context, DiagnosticHandler, AcceptSupportedOnly);
   M->setMaterializer(R);
   if (std::error_code EC = R->ParseBitcodeInto(M)) {
     if (ErrMsg)
@@ -2334,13 +2243,13 @@ Module *llvm::getNaClStreamedBitcodeModule(const std::string &name,
   return M;
 }
 
-ErrorOr<Module *> llvm::NaClParseBitcodeFile(
-    MemoryBufferRef Buffer, LLVMContext& Context, raw_ostream *Verbose,
-    bool AcceptSupportedOnly){
+ErrorOr<Module *>
+llvm::NaClParseBitcodeFile(MemoryBufferRef Buffer, LLVMContext &Context,
+                           DiagnosticHandlerFunction DiagnosticHandler,
+                           bool AcceptSupportedOnly) {
   std::unique_ptr<MemoryBuffer> Buf = MemoryBuffer::getMemBuffer(Buffer, false);
-  ErrorOr<Module *> ModuleOrErr =
-      getNaClLazyBitcodeModule(std::move(Buf), Context, Verbose,
-                               AcceptSupportedOnly);
+  ErrorOr<Module *> ModuleOrErr = getNaClLazyBitcodeModule(
+      std::move(Buf), Context, DiagnosticHandler, AcceptSupportedOnly);
   if (!ModuleOrErr)
     return ModuleOrErr;
   Module *M = ModuleOrErr.get();

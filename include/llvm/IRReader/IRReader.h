@@ -15,6 +15,7 @@
 #ifndef LLVM_IRREADER_IRREADER_H
 #define LLVM_IRREADER_IRREADER_H
 
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include <string>
 
@@ -59,25 +60,19 @@ enum NaClFileFormat {
 
 // \brief If the given MemoryBuffer holds a bitcode image, return a
 // Module for it.  Otherwise, attempt to parse it as LLVM Assembly and
-// return a Module for it. When Format=PNaClFormat and Verbose
-// is non-null, more descriptive error messages are also written to
-// Verbose.
-std::unique_ptr<Module> NaClParseIR(MemoryBufferRef Buffer,
-                                    NaClFileFormat Format,
-                                    SMDiagnostic &Err,
-                                    raw_ostream *Verbose,
-                                    LLVMContext &Context);
+// return a Module for it.
+std::unique_ptr<Module>
+NaClParseIR(MemoryBufferRef Buffer, NaClFileFormat Format, SMDiagnostic &Err,
+            LLVMContext &Context,
+            DiagnosticHandlerFunction DiagnosticHandler = nullptr);
 
 /// \brief If the given file holds a Bitcode image, read the file.
 /// Otherwise, attempt to parse it as LLVM assembly and return a
-/// Module for it. When Format=PNaClFormat and Verbose
-// is non-null, more descriptive error messages are also written to
-// Verbose.
-std::unique_ptr<Module> NaClParseIRFile(StringRef Filename,
-                                        NaClFileFormat Format,
-                                        SMDiagnostic &Err,
-                                        raw_ostream *Verbose,
-                                        LLVMContext &Context);
+/// Module for it.
+std::unique_ptr<Module>
+NaClParseIRFile(StringRef Filename, NaClFileFormat Format, SMDiagnostic &Err,
+                LLVMContext &Context,
+                DiagnosticHandlerFunction DiagnosticHandler = nullptr);
 // @LOCALMOD-END
 }
 

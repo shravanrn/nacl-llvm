@@ -35,12 +35,6 @@ OutputFilename("o", cl::desc("Specify thawed pexe filename"),
 static cl::opt<std::string>
 InputFilename(cl::Positional, cl::desc("<frozen file>"), cl::init("-"));
 
-static cl::opt<bool>
-VerboseErrors(
-    "verbose-parse-errors",
-    cl::desc("Print out more descriptive PNaCl bitcode parse errors"),
-    cl::init(false));
-
 static void WriteOutputFile(const Module *M) {
 
   std::error_code EC;
@@ -57,9 +51,8 @@ static void WriteOutputFile(const Module *M) {
   Out->keep();
 }
 
-static Module *readBitcode(
-    std::string &Filename, LLVMContext &Context, raw_ostream *Verbose,
-    std::string &ErrorMessage) {
+static Module *readBitcode(std::string &Filename, LLVMContext &Context,
+                           std::string &ErrorMessage) {
   // Use the bitcode streaming interface
   DataStreamer *Streamer = getDataFileStreamer(InputFilename, &ErrorMessage);
   if (Streamer == nullptr)
@@ -71,10 +64,10 @@ static Module *readBitcode(
     DisplayFilename = "<stdin>";
   else
     DisplayFilename = Filename;
-  Module *M = getNaClStreamedBitcodeModule(DisplayFilename, Buffer.release(),
-                                           Context, Verbose,
-                                           &ErrorMessage,
-                                           /*AcceptSupportedOnly=*/false);
+  DiagnosticHandlerFunction DiagnosticHandler = nullptr;
+  Module *M = getNaClStreamedBitcodeModule(
+      DisplayFilename, Buffer.release(), Context, DiagnosticHandler,
+      &ErrorMessage, /*AcceptSupportedOnly=*/false);
   if (!M)
     return nullptr;
   if (std::error_code EC = M->materializeAllPermanently()) {
@@ -99,9 +92,7 @@ int main(int argc, char **argv) {
       argc, argv, "Converts NaCl pexe wire format into LLVM bitcode format\n");
 
   std::string ErrorMessage;
-  raw_ostream *Verbose = VerboseErrors ? &errs() : nullptr;
-  std::unique_ptr<Module> M(readBitcode(InputFilename, Context,
-                                        Verbose, ErrorMessage));
+  std::unique_ptr<Module> M(readBitcode(InputFilename, Context, ErrorMessage));
 
   if (!M.get()) {
     errs() << argv[0] << ": ";

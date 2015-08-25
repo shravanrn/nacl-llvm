@@ -7,10 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "NaClMungeTest.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Bitcode/BitstreamWriter.h"
 #include "llvm/Bitcode/NaCl/NaClReaderWriter.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -19,7 +21,8 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "gtest/gtest.h"
 
-namespace llvm {
+using namespace llvm;
+
 namespace {
 
 static std::unique_ptr<Module> makeLLVMModule() {
@@ -49,7 +52,8 @@ static void writeModuleToBuffer(SmallVectorImpl<char> &Buffer) {
 TEST(NaClBitReaderTest, MaterializeSimpleModule) {
   SmallString<1024> Mem;
   writeModuleToBuffer(Mem);
-  std::unique_ptr<MemoryBuffer> Buffer = MemoryBuffer::getMemBuffer(Mem.str(), "test", false);
+  std::unique_ptr<MemoryBuffer> Buffer =
+      MemoryBuffer::getMemBuffer(Mem.str(), "test", false);
   ErrorOr<Module *> ModuleOrErr =
       getNaClLazyBitcodeModule(std::move(Buffer), getGlobalContext());
   EXPECT_EQ(true, bool(ModuleOrErr));
@@ -65,13 +69,15 @@ TEST(NaClBitReaderTest, BadDataAfterModule) {
   SmallString<1024> Mem;
   writeModuleToBuffer(Mem);
   Mem.append("more"); // Length must be divisible by 4!
-  std::unique_ptr<MemoryBuffer> Buffer = MemoryBuffer::getMemBuffer(Mem.str(), "test", false);
+  std::unique_ptr<MemoryBuffer> Buffer =
+      MemoryBuffer::getMemBuffer(Mem.str(), "test", false);
+  std::string OutputBuffer;
+  raw_string_ostream OutputStream(OutputBuffer);
   ErrorOr<Module *> ModuleOrErr =
-      getNaClLazyBitcodeModule(std::move(Buffer), getGlobalContext());
+      getNaClLazyBitcodeModule(std::move(Buffer), getGlobalContext(),
+                               redirectNaClDiagnosticToStream(OutputStream));
   EXPECT_EQ(false, bool(ModuleOrErr));
-  std::string BadMessage("Invalid data after module");
-  EXPECT_EQ(BadMessage, ModuleOrErr.getError().message());
-}
-
+  std::string BadMessage("Invalid data after module\n");
+  EXPECT_EQ(BadMessage, naclmungetest::stripErrorPrefix(OutputStream.str()));
 }
 }

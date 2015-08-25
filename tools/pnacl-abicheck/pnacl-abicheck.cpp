@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Analysis/NaCl.h"
+#include "llvm/Bitcode/NaCl/NaClReaderWriter.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -70,9 +71,10 @@ int main(int argc, char **argv) {
   if (Quiet)
     VerboseErrors = false;
 
-  raw_ostream *Verbose = VerboseErrors ? &errs() : nullptr;
-  std::unique_ptr<Module> Mod(
-      NaClParseIRFile(InputFilename, InputFileFormat, Err, Verbose, Context));
+  DiagnosticHandlerFunction DiagnosticHandler =
+      VerboseErrors ? redirectNaClDiagnosticToStream(errs()) : nullptr;
+  std::unique_ptr<Module> Mod(NaClParseIRFile(InputFilename, InputFileFormat,
+                                              Err, Context, DiagnosticHandler));
   if (Mod.get() == 0) {
     Err.print(argv[0], errs());
     return 1;

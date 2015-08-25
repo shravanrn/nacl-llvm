@@ -83,10 +83,9 @@ TEST(NaClParseInstsTest, NonexistantCallArg) {
 
   NaClParseBitcodeMunger Munger(ARRAY_TERM(BitcodeRecords));
   EXPECT_FALSE(Munger.runTest(true));
-  EXPECT_EQ(
-      "Error(72:6): Invalid call argument: Index 1\n"
-      "Error: Invalid value in record\n",
-      Munger.getTestResults());
+  EXPECT_EQ("Invalid call argument: Index 1\n"
+            "Corrupted bitcode\n",
+            stripErrorPrefix(Munger.getTestResults()));
 }
 
 /// Test how we recognize alignments in alloca instructions.
@@ -161,10 +160,9 @@ TEST(NaClParseInstsTests, BadAllocaAlignment) {
     3, naclbitc::FUNC_CODE_INST_ALLOCA, 1, getEncAlignPower(30), Terminator,
   };
   EXPECT_FALSE(Munger.runTest(ARRAY(Align30), true));
-  EXPECT_EQ(
-      "Error(65:6): Alignment can't be greater than 2**29. Found: 2**30\n"
-      "Error: Invalid value in record\n",
-      Munger.getTestResults());
+  EXPECT_EQ("Alignment can't be greater than 2**29. Found: 2**30\n"
+            "Corrupted bitcode\n",
+            stripErrorPrefix(Munger.getTestResults()));
   EXPECT_FALSE(DumpMunger.runTestForAssembly(ARRAY(Align30)));
   EXPECT_EQ(
       "    %v0 = alloca i8, i32 %p0, align 0;\n",
@@ -285,10 +283,9 @@ TEST(NaClParseInstsTests, BadLoadAlignment) {
     3, naclbitc::FUNC_CODE_INST_LOAD, 1, getEncAlignPower(30), 0, Terminator,
   };
   EXPECT_FALSE(Munger.runTest(ARRAY(Align30), true));
-  EXPECT_EQ(
-      "Error(62:4): Alignment can't be greater than 2**29. Found: 2**30\n"
-      "Error: Invalid value in record\n",
-      Munger.getTestResults());
+  EXPECT_EQ("Alignment can't be greater than 2**29. Found: 2**30\n"
+            "Corrupted bitcode\n",
+            stripErrorPrefix(Munger.getTestResults()));
   EXPECT_FALSE(DumpMunger.runTestForAssembly(ARRAY(Align30)));
   EXPECT_EQ(
       "    %v0 = load i32* %p0, align 0;\n"
@@ -405,10 +402,9 @@ TEST(NaClParseInstsTests, BadStoreAlignment) {
     3, naclbitc::FUNC_CODE_INST_STORE, 2, 1, getEncAlignPower(30), Terminator,
   };
   EXPECT_FALSE(Munger.runTest(ARRAY(Align30), true));
-  EXPECT_EQ(
-      "Error(66:4): Alignment can't be greater than 2**29. Found: 2**30\n"
-      "Error: Invalid value in record\n",
-      Munger.getTestResults());
+  EXPECT_EQ("Alignment can't be greater than 2**29. Found: 2**30\n"
+            "Corrupted bitcode\n",
+            stripErrorPrefix(Munger.getTestResults()));
   EXPECT_FALSE(DumpMunger.runTestForAssembly(ARRAY(Align30)));
   EXPECT_EQ(
       "    store float %p1, float* %p0, align 0;\n"

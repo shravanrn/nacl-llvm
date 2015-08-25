@@ -287,5 +287,6 @@ llvm::parseNaClBitcodeText(const std::string &Filename, LLVMContext &Context,
   // Parse buffer as ordinary binary bitcode file.
   StringRef BitcodeBuffer(Buffer.data(),  Buffer.size());
   MemoryBufferRef MemBufRef(BitcodeBuffer, Filename);
-  return NaClParseBitcodeFile(MemBufRef, Context, Verbose);
+  DiagnosticHandlerFunction DiagnosticHandler = nullptr;
+  return NaClParseBitcodeFile(MemBufRef, Context, DiagnosticHandler, Verbose);
 }

@@ -141,11 +141,9 @@ bool NaClParseBitcodeMunger::runTest(const uint64_t Munges[], size_t MungesSize,
     return cleanupTest();
 
   LLVMContext &Context = getGlobalContext();
-
-  raw_ostream *VerboseStrm = VerboseErrors ? &getDumpStream() : nullptr;
   ErrorOr<Module *> ModuleOrError =
       NaClParseBitcodeFile(MungedInput->getMemBufferRef(), Context,
-                           VerboseStrm);
+                           redirectNaClDiagnosticToStream(getDumpStream()));
   if (ModuleOrError) {
     if (VerboseErrors)
       getDumpStream() << "Successful parse!\n";

@@ -150,7 +150,7 @@ protected:
   // message to.
   raw_ostream &Error() {
     FoundErrors = true;
-    return getDumpStream() << "Error: ";
+    return getDumpStream() << "error: ";
   }
 
   // Returns the lines containing the given Substring, from the string
@@ -274,10 +274,13 @@ public:
 
   /// Runs function llvm::NaClParseBitcodeFile, and puts error messages
   /// into DumpResults. Returns true if parse is successful.
-  bool runTest(const uint64_t Munges[], size_t MungesSize, bool VerboseErrors);
+  /// TODO(kschimpf) Remove VerboseErrors, no longer useful.
+  bool runTest(const uint64_t Munges[], size_t MungesSize,
+               bool VerboseErrors = false);
 
   // Same as above, but without any edits.
-  bool runTest(bool VerboseErrors) {
+  /// TODO(kschimpf) Remove VerboseErrors, no longer useful.
+  bool runTest(bool VerboseErrors = false) {
     uint64_t NoMunges[] = {0};
     return runTest(NoMunges, 0, VerboseErrors);
   }

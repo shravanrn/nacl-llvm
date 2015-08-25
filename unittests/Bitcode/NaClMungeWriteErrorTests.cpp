@@ -66,7 +66,7 @@ const char *ExpectedDumpedBitcode =
     ;
 
 const char *UnableToContinue =
-      "Error: Unable to generate bitcode file due to write errors\n";
+    "error: Unable to generate bitcode file due to write errors\n";
 
 const char *NoErrorRecoveryMessages = "";
 

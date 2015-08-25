@@ -25,6 +25,10 @@ const uint64_t Terminator = 0x5768798008978675LL;
 
 #define ARRAY_TERM(name) ARRAY(name), Terminator
 
+// Removes error severity prefices, if present, for each line in the message.
+// Returns the stripped result.
+std::string stripErrorPrefix(const std::string &Message);
+
 inline std::string stringify(llvm::NaClMungedBitcode &MungedBitcode) {
   std::string Buffer;
   llvm::raw_string_ostream StrBuf(Buffer);

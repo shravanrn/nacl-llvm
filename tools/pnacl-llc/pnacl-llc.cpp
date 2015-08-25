@@ -368,15 +368,16 @@ static std::unique_ptr<Module> getModule(
       std::unique_ptr<StreamingMemoryObject> Cache(
           new ThreadedStreamingCache(StreamingObject));
       M.reset(getNaClStreamedBitcodeModule(
-          InputFilename, Cache.release(), Context, &VerboseStrm, &StrError));
+          InputFilename, Cache.release(), Context,
+          redirectNaClDiagnosticToStream(VerboseStrm), &StrError));
       break;
     }
     case LLVMFormat: {
       std::unique_ptr<StreamingMemoryObject> Cache(
           new ThreadedStreamingCache(StreamingObject));
       ErrorOr<std::unique_ptr<Module>> MOrErr =
-          getStreamedBitcodeModule(
-          InputFilename, Cache.release(), Context);
+          getStreamedBitcodeModule(InputFilename, Cache.release(), Context,
+                                   redirectNaClDiagnosticToStream(VerboseStrm));
       M = std::move(*MOrErr);
       break;
     }
@@ -394,8 +395,8 @@ static std::unique_ptr<Module> getModule(
     } else {
       // Parses binary bitcode as well as textual assembly
       // (so pulls in more code into pnacl-llc).
-      M = NaClParseIRFile(InputFilename, InputFileFormat, Err, &VerboseStrm,
-                          Context);
+      M = NaClParseIRFile(InputFilename, InputFileFormat, Err, Context,
+                          redirectNaClDiagnosticToStream(VerboseStrm));
     }
 #endif
   }

@@ -104,11 +104,10 @@ static NaClFileFormat NaClDoAutodetectFileFormat(
   return LLVMFormat;
 }
 
-std::unique_ptr<Module> llvm::NaClParseIR(MemoryBufferRef Buffer,
-                                          NaClFileFormat Format,
-                                          SMDiagnostic &Err,
-                                          raw_ostream *Verbose,
-                                          LLVMContext &Context) {
+std::unique_ptr<Module>
+llvm::NaClParseIR(MemoryBufferRef Buffer, NaClFileFormat Format,
+                  SMDiagnostic &Err, LLVMContext &Context,
+                  DiagnosticHandlerFunction DiagnosticHandler) {
   NamedRegionTimer T(TimeIRParsingName, TimeIRParsingGroupName,
                      TimePassesIsEnabled);
   Format = NaClDoAutodetectFileFormat(
@@ -118,7 +117,7 @@ std::unique_ptr<Module> llvm::NaClParseIR(MemoryBufferRef Buffer,
       isNaClBitcode((const unsigned char *)Buffer.getBufferStart(),
                     (const unsigned char *)Buffer.getBufferEnd())) {
     ErrorOr<Module *> ModuleOrErr =
-        NaClParseBitcodeFile(Buffer, Context, Verbose);
+        NaClParseBitcodeFile(Buffer, Context, DiagnosticHandler);
     if (std::error_code EC = ModuleOrErr.getError()) {
       Err = SMDiagnostic(Buffer.getBufferIdentifier(), SourceMgr::DK_Error,
                          EC.message());
@@ -128,7 +127,8 @@ std::unique_ptr<Module> llvm::NaClParseIR(MemoryBufferRef Buffer,
   } else if (Format == LLVMFormat) {
     if (isBitcode((const unsigned char *)Buffer.getBufferStart(),
                   (const unsigned char *)Buffer.getBufferEnd())) {
-      ErrorOr<Module *> ModuleOrErr = parseBitcodeFile(Buffer, Context);
+      ErrorOr<Module *> ModuleOrErr =
+          parseBitcodeFile(Buffer, Context, DiagnosticHandler);
       if (std::error_code EC = ModuleOrErr.getError()) {
         Err = SMDiagnostic(Buffer.getBufferIdentifier(), SourceMgr::DK_Error,
                            EC.message());
@@ -145,11 +145,10 @@ std::unique_ptr<Module> llvm::NaClParseIR(MemoryBufferRef Buffer,
   }
 }
 
-std::unique_ptr<Module> llvm::NaClParseIRFile(StringRef Filename,
-                                              NaClFileFormat Format,
-                                              SMDiagnostic &Err,
-                                              raw_ostream *Verbose,
-                                              LLVMContext &Context) {
+std::unique_ptr<Module>
+llvm::NaClParseIRFile(StringRef Filename, NaClFileFormat Format,
+                      SMDiagnostic &Err, LLVMContext &Context,
+                      DiagnosticHandlerFunction DiagnosticHandler) {
   ErrorOr<std::unique_ptr<MemoryBuffer>> FileOrErr =
       MemoryBuffer::getFileOrSTDIN(Filename);
   if (std::error_code EC = FileOrErr.getError()) {
@@ -158,8 +157,8 @@ std::unique_ptr<Module> llvm::NaClParseIRFile(StringRef Filename,
     return nullptr;
   }
 
-  return NaClParseIR(FileOrErr.get()->getMemBufferRef(), Format, Err, Verbose,
-                     Context);
+  return NaClParseIR(FileOrErr.get()->getMemBufferRef(), Format, Err, Context,
+                     DiagnosticHandler);
 }
 
 // @LOCALMOD-END

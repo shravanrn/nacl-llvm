@@ -189,8 +189,8 @@ int main(int argc, char **argv) {
       }
       case PNaClFormat: {
         M.reset(getNaClStreamedBitcodeModule(
-            DisplayFilename, Buffer.release(), Context, &errs(),
-            &ErrorMessage));
+            DisplayFilename, Buffer.release(), Context,
+            /* DiagnosticHandler = */ nullptr, &ErrorMessage));
         if(M.get()) {
           if (std::error_code EC = M->materializeAllPermanently()) {
             FoundErrors = true;
