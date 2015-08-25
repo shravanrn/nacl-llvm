@@ -66,6 +66,10 @@ namespace {
 
 static const unsigned int TypicalFuncArity = 8;
 
+static bool shouldPromote(const Type *Ty) {
+  return Ty->isAggregateType();
+}
+
 // Utility class. For any given type, get the associated type that is free of
 // struct register arguments.
 class TypeMapper : public SimplifiedFuncTypeMap {
@@ -79,7 +83,7 @@ protected:
     bool Changed = false;
     // Struct register returns become the first parameter of the new FT.
     // The new FT has void for the return type
-    if (OldRetType->isAggregateType()) {
+    if (shouldPromote(OldRetType)) {
       NewRetType = Void;
       Changed = true;
       NewArgs.push_back(getSimpleArgumentType(Ctx, OldRetType, Tentatives));
@@ -99,7 +103,7 @@ private:
   MappingResult getSimpleArgumentType(LLVMContext &Ctx, Type *Ty,
                                       StructMap &Tentatives) {
     // struct registers become pointers to simple structs
-    if (Ty->isAggregateType()) {
+    if (shouldPromote(Ty)) {
       return {PointerType::get(
                   getSimpleAggregateTypeInternal(Ctx, Ty, Tentatives), 0),
               true};
@@ -157,33 +161,10 @@ INITIALIZE_PASS(
     "Simplify function signatures by removing struct register parameters",
     false, false)
 
-// Apply 'byval' to func arguments that used to be struct regs.
-// Apply 'sret' to the argument corresponding to the return in the old
-// signature.
-static void ApplyByValAndSRet(Function *OldFunc, Function *NewFunc) {
-  // When calling addAttribute, the first one refers to the function, so we
-  // skip past that.
-  unsigned ArgOffset = 1;
-  if (OldFunc->getReturnType()->isAggregateType()) {
-    NewFunc->addAttribute(1, Attribute::AttrKind::StructRet);
-    ArgOffset++;
-  }
-
-  auto &NewArgList = NewFunc->getArgumentList();
-  auto NewArg = NewArgList.begin();
-  for (const Argument &OldArg : OldFunc->getArgumentList()) {
-    if (OldArg.getType()->isAggregateType()) {
-      NewFunc->addAttribute(NewArg->getArgNo() + ArgOffset,
-                            Attribute::AttrKind::ByVal);
-    }
-    NewArg++;
-  }
-}
-
 // Update the arg names for a newly created function.
 static void UpdateArgNames(Function *OldFunc, Function *NewFunc) {
   auto NewArgIter = NewFunc->arg_begin();
-  if (OldFunc->getReturnType()->isAggregateType()) {
+  if (shouldPromote(OldFunc->getReturnType())) {
     NewArgIter->setName("retVal");
     NewArgIter++;
   }
@@ -191,7 +172,7 @@ static void UpdateArgNames(Function *OldFunc, Function *NewFunc) {
   for (const Argument &OldArg : OldFunc->args()) {
     Argument *NewArg = NewArgIter++;
     NewArg->setName(OldArg.getName() +
-                    (OldArg.getType()->isAggregateType() ? ".ptr" : ""));
+                    (shouldPromote(OldArg.getType()) ? ".ptr" : ""));
   }
 }
 
@@ -205,8 +186,8 @@ static void BlindReplace(Value *Old, Value *New) {
 }
 
 // Adapt the body of a function for the new arguments.
-static void ConvertArgumentValue(Value *Old, Value *New,
-                                 Instruction *InsPoint) {
+static void ConvertArgumentValue(Value *Old, Value *New, Instruction *InsPoint,
+                                 const bool IsAggregateToPtr) {
   if (Old == New)
     return;
 
@@ -216,8 +197,6 @@ static void ConvertArgumentValue(Value *Old, Value *New,
     return;
   }
 
-  bool IsAggregateToPtr =
-      Old->getType()->isAggregateType() && New->getType()->isPointerTy();
   BlindReplace(Old, (IsAggregateToPtr
                          ? new LoadInst(New, Old->getName() + ".sreg", InsPoint)
                          : New));
@@ -242,6 +221,79 @@ static void FixReturn(Function *OldFunc, Function *NewFunc) {
         Ret->eraseFromParent();
       }
     }
+  }
+}
+
+/// In the next two functions, `RetIndex` is the index of the possibly promoted
+/// return.
+/// Ie if the return is promoted, `RetIndex` should be `1`, else `0`.
+static AttributeSet CopyRetAttributes(LLVMContext &C, const DataLayout &DL,
+                                      const AttributeSet From, Type *RetTy,
+                                      const unsigned RetIndex) {
+  AttributeSet NewAttrs;
+  if (RetIndex != 0) {
+    NewAttrs = NewAttrs.addAttribute(C, RetIndex, Attribute::StructRet);
+    NewAttrs = NewAttrs.addAttribute(C, RetIndex, Attribute::NonNull);
+    NewAttrs = NewAttrs.addAttribute(C, RetIndex, Attribute::NoCapture);
+    if (RetTy->isSized()) {
+      NewAttrs = NewAttrs.addDereferenceableAttr(C, RetIndex,
+                                                 DL.getTypeAllocSize(RetTy));
+    }
+  } else {
+    NewAttrs = NewAttrs.addAttributes(C, RetIndex, From.getRetAttributes());
+  }
+
+  auto FnAttrs = From.getFnAttributes();
+  if (RetIndex != 0) {
+    FnAttrs = FnAttrs.removeAttribute(C, AttributeSet::FunctionIndex,
+                                      Attribute::ReadOnly);
+    FnAttrs = FnAttrs.removeAttribute(C, AttributeSet::FunctionIndex,
+                                      Attribute::ReadNone);
+  }
+  NewAttrs = NewAttrs.addAttributes(C, AttributeSet::FunctionIndex, FnAttrs);
+
+  return NewAttrs;
+}
+/// Iff the argument in question was promoted, `NewArgTy` should be non-null.
+static AttributeSet CopyArgAttributes(AttributeSet NewAttrs, LLVMContext &C,
+                                      const DataLayout &DL,
+                                      const AttributeSet From,
+                                      const unsigned OldArg, Type *NewArgTy,
+                                      const unsigned RetIndex) {
+  const unsigned NewIndex = RetIndex + OldArg + 1;
+  if (!NewArgTy) {
+    const unsigned OldIndex = OldArg + 1;
+    auto OldAttrs = From.getParamAttributes(OldIndex);
+    if (OldAttrs.getNumSlots() == 0) {
+      return NewAttrs;
+    }
+
+    // move the params to the new index position:
+    unsigned OldSlot = 0;
+    for (; OldSlot < OldAttrs.getNumSlots(); ++OldSlot) {
+      if (OldAttrs.getSlotIndex(OldSlot) == OldIndex) {
+        break;
+      }
+    }
+    assert(OldSlot != OldAttrs.getNumSlots());
+
+    AttrBuilder B(AttributeSet(), NewIndex);
+    for (auto II = OldAttrs.begin(OldSlot), IE = OldAttrs.end(OldSlot);
+         II != IE; ++II) {
+      B.addAttribute(*II);
+    }
+    auto Attrs = AttributeSet::get(C, NewIndex, B);
+    NewAttrs = NewAttrs.addAttributes(C, NewIndex, Attrs);
+    return NewAttrs;
+  } else {
+    NewAttrs = NewAttrs.addAttribute(C, NewIndex, Attribute::NonNull);
+    NewAttrs = NewAttrs.addAttribute(C, NewIndex, Attribute::NoCapture);
+    NewAttrs = NewAttrs.addAttribute(C, NewIndex, Attribute::ReadOnly);
+    if (NewArgTy->isSized()) {
+      NewAttrs = NewAttrs.addDereferenceableAttr(C, NewIndex,
+                                                 DL.getTypeAllocSize(NewArgTy));
+    }
+    return NewAttrs;
   }
 }
 
@@ -294,19 +346,25 @@ void SimplifyStructRegSignatures::fixCallSite(LLVMContext &Ctx, TCall *OldCall,
                                               unsigned PreferredAlignment) {
   Value *NewTarget = OldCall->getCalledValue();
 
+  bool IsTargetFunction = false;
   if (Function *CalledFunc = dyn_cast<Function>(NewTarget)) {
     NewTarget = this->FunctionMap[CalledFunc];
+    IsTargetFunction = true;
   }
   assert(NewTarget);
 
   auto *NewType = cast<FunctionType>(
       Mapper.getSimpleType(Ctx, NewTarget->getType())->getPointerElementType());
 
+  IRBuilder<> Builder(OldCall);
+  if (!IsTargetFunction) {
+    NewTarget = Builder.CreateBitCast(NewTarget, NewType->getPointerTo());
+  }
+
   auto *OldRetType = OldCall->getType();
   const bool IsSRet =
       !OldCall->getType()->isVoidTy() && NewType->getReturnType()->isVoidTy();
 
-  IRBuilder<> Builder(OldCall);
   auto AllocaInsPoint =
       OldCall->getParent()->getParent()->getEntryBlock().getFirstInsertionPt();
 
@@ -339,12 +397,22 @@ TCall *SimplifyStructRegSignatures::fixCallTargetAndArguments(
     LLVMContext &Ctx, IRBuilder<> &Builder, TCall *OldCall, Value *NewTarget,
     FunctionType *NewType, BasicBlock::iterator AllocaInsPoint,
     Value *ExtraArg) {
-  SmallSetVector<unsigned, TypicalFuncArity> ByRefPlaces;
   SmallVector<Value *, TypicalFuncArity> NewArgs;
 
+  const DataLayout &DL = OldCall->getParent() // BB
+                             ->getParent()    // F
+                             ->getParent()    // M
+                             ->getDataLayout();
+
+  const AttributeSet OldSet = OldCall->getAttributes();
+
   unsigned argOffset = ExtraArg ? 1 : 0;
+  const unsigned RetSlot = AttributeSet::ReturnIndex + argOffset;
   if (ExtraArg)
     NewArgs.push_back(ExtraArg);
+
+  AttributeSet NewSet =
+      CopyRetAttributes(Ctx, DL, OldSet, OldCall->getType(), RetSlot);
 
   // Go over the argument list used in the call/invoke, in order to
   // correctly deal with varargs scenarios.
@@ -358,7 +426,9 @@ TCall *SimplifyStructRegSignatures::fixCallTargetAndArguments(
     unsigned NewArgPos = OldArgUse.getOperandNo() + argOffset;
     Type *NewArgType = NewType->getFunctionParamType(NewArgPos);
 
-    if (OldArgType != NewArgType && OldArgType->isAggregateType()) {
+    Type *InnerNewArgType = nullptr;
+
+    if (OldArgType != NewArgType && shouldPromote(OldArgType)) {
       if (NewArgPos >= VarargMark) {
         errs() << *OldCall << '\n';
         report_fatal_error("Aggregate register vararg is not supported");
@@ -368,44 +438,35 @@ TCall *SimplifyStructRegSignatures::fixCallTargetAndArguments(
       Alloca->setName(OldArg->getName() + ".ptr");
 
       Builder.CreateStore(OldArg, Alloca);
-      ByRefPlaces.insert(NewArgPos);
       NewArgs.push_back(Alloca);
+
+      InnerNewArgType = NewArgType->getPointerElementType();
+    } else if (OldArgType != NewArgType && OldArgType->isPointerTy()) {
+      // This would be a function ptr or would have a function type nested in
+      // it.
+      NewArgs.push_back(Builder.CreatePointerCast(OldArg, NewArgType));
     } else {
       NewArgs.push_back(OldArg);
     }
+
+    NewSet = CopyArgAttributes(NewSet, Ctx, DL, OldSet, ArgPos, InnerNewArgType,
+                               RetSlot);
   }
 
   ArrayRef<Value *> ArrRef = NewArgs;
   TCall *NewCall = CreateCallFrom(OldCall, NewTarget, ArrRef, Builder);
 
-  // Copy the attributes over, and add byref/sret as necessary.
-  const AttributeSet &OldAttrSet = OldCall->getAttributes();
-  const AttributeSet &NewAttrSet = NewCall->getAttributes();
+  NewCall->setAttributes(NewSet);
 
-  for (unsigned I = 0; I < NewCall->getNumArgOperands(); I++) {
-    NewCall->setAttributes(NewAttrSet.addAttributes(
-        Ctx, I + argOffset + 1, OldAttrSet.getParamAttributes(I + 1)));
-    if (ByRefPlaces.count(I)) {
-      NewCall->addAttribute(I + 1, Attribute::ByVal);
-    }
-  }
-
-  if (ExtraArg) {
-    NewAttrSet.addAttributes(Ctx, 1, OldAttrSet.getRetAttributes());
-    NewCall->addAttribute(1, Attribute::StructRet);
-  } else {
-    NewCall->setAttributes(NewAttrSet.addAttributes(
-        Ctx, AttributeSet::ReturnIndex, OldAttrSet.getRetAttributes()));
-  }
   return NewCall;
 }
 
-void SimplifyStructRegSignatures::scheduleInstructionsForCleanup(
-    Function *NewFunc) {
+void
+SimplifyStructRegSignatures::scheduleInstructionsForCleanup(Function *NewFunc) {
   for (auto &BBIter : NewFunc->getBasicBlockList()) {
     for (auto &IIter : BBIter.getInstList()) {
       if (CallInst *Call = dyn_cast<CallInst>(&IIter)) {
-        if (Function* F = dyn_cast<Function>(Call->getCalledValue())) {
+        if (Function *F = dyn_cast<Function>(Call->getCalledValue())) {
           if (F->isIntrinsic()) {
             continue;
           }
@@ -422,10 +483,15 @@ void SimplifyStructRegSignatures::scheduleInstructionsForCleanup(
 void SimplifyStructRegSignatures::fixFunctionBody(LLVMContext &Ctx,
                                                   Function *OldFunc,
                                                   Function *NewFunc) {
-  if (NewFunc->empty())
-    return;
+  const DataLayout &DL = OldFunc->getParent()->getDataLayout();
 
-  bool returnWasFixed = OldFunc->getReturnType()->isAggregateType();
+  bool returnWasFixed = shouldPromote(OldFunc->getReturnType());
+
+  const AttributeSet OldSet = OldFunc->getAttributes();
+
+  const unsigned RetSlot = AttributeSet::ReturnIndex + (returnWasFixed ? 1 : 0);
+  AttributeSet NewSet =
+      CopyRetAttributes(Ctx, DL, OldSet, OldFunc->getReturnType(), RetSlot);
 
   Instruction *InsPoint = NewFunc->begin()->begin();
   auto NewArgIter = NewFunc->arg_begin();
@@ -434,12 +500,29 @@ void SimplifyStructRegSignatures::fixFunctionBody(LLVMContext &Ctx,
     NewArgIter++;
 
   // Wire new parameters in.
+  unsigned ArgIndex = 0;
   for (auto ArgIter = OldFunc->arg_begin(), E = OldFunc->arg_end();
-       E != ArgIter;) {
+       E != ArgIter; ArgIndex++) {
     Argument *OldArg = ArgIter++;
     Argument *NewArg = NewArgIter++;
-    ConvertArgumentValue(OldArg, NewArg, InsPoint);
+
+    const bool IsAggregateToPtr =
+        shouldPromote(OldArg->getType()) && NewArg->getType()->isPointerTy();
+
+    if (!NewFunc->empty()) {
+      ConvertArgumentValue(OldArg, NewArg, InsPoint, IsAggregateToPtr);
+    }
+
+    Type *Inner = nullptr;
+    if (IsAggregateToPtr) {
+      Inner = NewArg->getType()->getPointerElementType();
+    }
+
+    NewSet =
+        CopyArgAttributes(NewSet, Ctx, DL, OldSet, ArgIndex, Inner, RetSlot);
   }
+
+  NewFunc->setAttributes(NewSet);
 
   // Now fix instruction types. We know that each value could only possibly be
   // of a simplified type. At the end of this, call sites will be invalid, but
@@ -450,7 +533,24 @@ void SimplifyStructRegSignatures::fixFunctionBody(LLVMContext &Ctx,
     auto Block = BBIter++;
     for (auto IIter = Block->begin(), LIns = Block->end(); LIns != IIter;) {
       auto Instr = IIter++;
-      Instr->mutateType(Mapper.getSimpleType(Ctx, Instr->getType()));
+      auto *NewTy = Mapper.getSimpleType(Ctx, Instr->getType());
+      Instr->mutateType(NewTy);
+
+      if (isa<CallInst>(Instr) ||
+          isa<InvokeInst>(Instr)) {
+        continue;
+      }
+
+      for (unsigned OpI = 0; OpI < Instr->getNumOperands(); OpI++) {
+        if(Constant *C = dyn_cast<Constant>(Instr->getOperand(OpI))) {
+          auto *NewTy = Mapper.getSimpleType(Ctx, C->getType());
+          if (NewTy == C->getType()) { continue; }
+
+          const auto CastOp = CastInst::getCastOpcode(C, false, NewTy, false);
+          auto *NewOp = ConstantExpr::getCast(CastOp, C, NewTy);
+          Instr->setOperand(OpI, NewOp);
+        }
+      }
     }
   }
   if (returnWasFixed)
@@ -470,17 +570,19 @@ bool SimplifyStructRegSignatures::simplifyFunction(
     auto *NewFunc = Function::Create(NewFT, OldFunc->getLinkage());
     AssociatedFctLoc = NewFunc;
 
-    NewFunc->copyAttributesFrom(OldFunc);
     OldFunc->getParent()->getFunctionList().insert(OldFunc, NewFunc);
     NewFunc->takeName(OldFunc);
 
     UpdateArgNames(OldFunc, NewFunc);
-    ApplyByValAndSRet(OldFunc, NewFunc);
 
     NewFunc->getBasicBlockList().splice(NewFunc->begin(),
                                         OldFunc->getBasicBlockList());
 
     fixFunctionBody(Ctx, OldFunc, NewFunc);
+
+    Constant *Cast = ConstantExpr::getPointerCast(NewFunc, OldFunc->getType());
+    OldFunc->replaceAllUsesWith(Cast);
+
     FunctionsToDelete.insert(OldFunc);
     auto Found = DISubprogramMap.find(OldFunc);
     if (Found != DISubprogramMap.end())
@@ -505,7 +607,10 @@ bool SimplifyStructRegSignatures::runOnModule(Module &M) {
   // wiring the new arguments. Call sites are unchanged at this point.
   for (Module::iterator Iter = M.begin(), E = M.end(); Iter != E;) {
     Function *Func = Iter++;
-    if(Func->isIntrinsic()) { continue; } // Can't rewrite the intrinsics.
+    if (Func->isIntrinsic()) {
+      // Can't rewrite intrinsics.
+      continue;
+    }
     checkNoUnsupportedInstructions(Ctx, Func);
     Changed |= simplifyFunction(Ctx, Func, DISubprogramMap);
   }
@@ -527,8 +632,9 @@ bool SimplifyStructRegSignatures::runOnModule(Module &M) {
   return Changed;
 }
 
-void SimplifyStructRegSignatures::checkNoUnsupportedInstructions(
-    LLVMContext &Ctx, Function *Fct) {
+void
+SimplifyStructRegSignatures::checkNoUnsupportedInstructions(LLVMContext &Ctx,
+                                                            Function *Fct) {
   for (auto &BB : Fct->getBasicBlockList())
     for (auto &Inst : BB.getInstList())
       if (auto *Landing = dyn_cast<LandingPadInst>(&Inst)) {

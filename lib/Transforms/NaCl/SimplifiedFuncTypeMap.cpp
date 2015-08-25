@@ -52,8 +52,8 @@ SimplifiedFuncTypeMap::getSimpleAggregateTypeInternal(LLVMContext &Ctx,
   }
 
   if (auto PtrTy = dyn_cast<PointerType>(Ty)) {
-    auto NewTy = getSimpleAggregateTypeInternal(
-        Ctx, PtrTy->getPointerElementType(), Tentatives);
+    auto *ElemTy = PtrTy->getPointerElementType();
+    auto NewTy = getSimpleAggregateTypeInternal(Ctx, ElemTy, Tentatives);
 
     return {NewTy->getPointerTo(PtrTy->getAddressSpace()), NewTy.isChanged()};
   }
@@ -114,9 +114,13 @@ SimplifiedFuncTypeMap::getSimpleAggregateTypeInternal(LLVMContext &Ctx,
       }
     } else {
       bool Changed = isChangedStruct(Ctx, StructTy, ElemTypes, Tentatives);
-      return {MappedTypes[StructTy] =
-                  StructType::get(Ctx, ElemTypes, StructTy->isPacked()),
-              Changed};
+      if (!Changed) {
+        return {StructTy, false};
+      } else {
+        return {MappedTypes[StructTy] =
+                    StructType::get(Ctx, ElemTypes, StructTy->isPacked()),
+                Changed};
+      }
     }
   }
 
@@ -131,8 +135,8 @@ bool SimplifiedFuncTypeMap::isChangedStruct(LLVMContext &Ctx,
   bool Changed = false;
   unsigned StructElemCount = StructTy->getStructNumElements();
   for (unsigned I = 0; I < StructElemCount; I++) {
-    auto NewElem = getSimpleAggregateTypeInternal(
-        Ctx, StructTy->getStructElementType(I), Tentatives);
+    auto *ElemTy = StructTy->getStructElementType(I);
+    auto NewElem = getSimpleAggregateTypeInternal(Ctx, ElemTy, Tentatives);
     ElemTypes.push_back(NewElem);
     Changed |= NewElem.isChanged();
   }

@@ -2,6 +2,9 @@
 
 declare i32 @__gxx_personality_v0(...)
 
+; to force const bitcast in @constoperand
+@const_global = global %rec_returning zeroinitializer
+
 %struct = type { i32, i32 }
 
 %rec_struct = type {%rec_struct*}
@@ -39,10 +42,10 @@ declare %struct @struct_returning_extern(i32, %struct)
 ; with non-struct regs
 ; CHECK-NOT: declare void @extern_func(%struct)
 ; CHECK-NOT: declare %struct @struct_returning_extern(i32, %struct)
-; CHECK-LABEL: declare void @extern_func(%struct* byval)
-; CHECK-LABEL: declare void @struct_returning_extern(%struct* sret, i32, %struct* byval)
+; CHECK-LABEL: declare void @extern_func(%struct* nocapture nonnull readonly dereferenceable(8))
+; CHECK-LABEL: declare void @struct_returning_extern(%struct* nocapture nonnull sret dereferenceable(8), i32, %struct* nocapture nonnull readonly dereferenceable(8))
 
-define void @main(%struct* byval %ptr) {
+define void @main(%struct* %ptr) {
   %val = load %struct, %struct* %ptr
   call void @extern_func(%struct %val)
   ret void
@@ -54,7 +57,7 @@ define void @two_param_func(%struct %val1, %struct %val2) {
   ret void
 }
 
-; CHECK-LABEL: define void @two_param_func(%struct* byval %val1.ptr, %struct* byval %val2.ptr)
+; CHECK-LABEL: define void @two_param_func(%struct* nocapture nonnull readonly dereferenceable(8) %val1.ptr, %struct* nocapture nonnull readonly dereferenceable(8) %val2.ptr)
 ; CHECK-NOT: define void @two_param_func(%struct %val1, %struct %val2)
 
 define i32 @another_func(i32 %a, %struct %str, i64 %b) {
@@ -63,8 +66,8 @@ define i32 @another_func(i32 %a, %struct %str, i64 %b) {
   ret i32 0
 }
 
-; CHECK-LABEL: define i32 @another_func(i32 %a, %struct* byval %str.ptr, i64 %b)
-; CHECK: call void @two_param_func(%struct* byval %str.sreg.ptr, %struct* byval %str.sreg.ptr1)
+; CHECK-LABEL: define i32 @another_func(i32 %a, %struct* nocapture nonnull readonly dereferenceable(8) %str.ptr, i64 %b)
+; CHECK: call void @two_param_func(%struct* nocapture nonnull readonly dereferenceable(8) %str.sreg.ptr, %struct* nocapture nonnull readonly dereferenceable(8) %str.sreg.ptr1)
 
 define %struct @returns_struct(i32 %an_int, %struct %val) {
   %tmp = call %struct @struct_returning_extern(i32 %an_int, %struct %val)
@@ -80,17 +83,17 @@ Cleanup:
 }
 
 ; verify return value and codegen
-; CHECK-LABEL: define void @returns_struct(%struct* sret %retVal, i32 %an_int, %struct* byval %val.ptr)
+; CHECK-LABEL: define void @returns_struct(%struct* nocapture nonnull sret dereferenceable(8) %retVal, i32 %an_int, %struct* nocapture nonnull readonly dereferenceable(8) %val.ptr)
 ; CHECK-NEXT:  %tmp2 = alloca %struct
 ; CHECK-NEXT:  %tmp.sreg.ptr = alloca %struct
 ; CHECK-NEXT:  %tmp = alloca %struct
 ; CHECK-NEXT:  %val.sreg.ptr = alloca %struct
 ; CHECK-NEXT:  %val.sreg = load %struct, %struct* %val.ptr
 ; CHECK-NEXT:  store %struct %val.sreg, %struct* %val.sreg.ptr
-; CHECK-NEXT:  call void @struct_returning_extern(%struct* sret %tmp, i32 %an_int, %struct* byval %val.sreg.ptr)
+; CHECK-NEXT:  call void @struct_returning_extern(%struct* nocapture nonnull sret dereferenceable(8) %tmp, i32 %an_int, %struct* nocapture nonnull readonly dereferenceable(8) %val.sreg.ptr)
 ; CHECK-NEXT:  %tmp.sreg = load %struct, %struct* %tmp
 ; CHECK-NEXT:  store %struct %tmp.sreg, %struct* %tmp.sreg.ptr
-; CHECK-NEXT:  invoke void @struct_returning_extern(%struct* sret %tmp2, i32 1, %struct* byval %tmp.sreg.ptr)
+; CHECK-NEXT:  invoke void @struct_returning_extern(%struct* nocapture nonnull sret dereferenceable(8) %tmp2, i32 1, %struct* nocapture nonnull readonly dereferenceable(8) %tmp.sreg.ptr)
 ; CHECK-NEXT:            to label %Cont unwind label %Cleanup
 ; CHECK-DAG:   Cont:
 ; CHECK-NEXT:    %tmp2.sreg = load %struct, %struct* %tmp2
@@ -110,7 +113,7 @@ define i32 @lots_of_call_attrs() {
 
 ; verify attributes are copied
 ; CHECK_LABEL: @lots_of_call_attrs
-; CHECK: %ret = tail call zeroext i32 @another_func(i32 1, %struct* byval %tmp.1.ptr, i64 2) #1
+; CHECK: %ret = tail call zeroext i32 @another_func(i32 1, %struct* nocapture nonnull readonly dereferenceable(8) %tmp.1.ptr, i64 2) #3
 ; CHECK-NEXT: ret i32 %ret
 
 declare void @rec_struct_ok(%rec_struct*)
@@ -118,7 +121,7 @@ declare void @rec_struct_mod(%rec_struct)
 
 ; compliant recursive structs are kept as-is
 ; CHECK-LABEL: declare void @rec_struct_ok(%rec_struct*)
-; CHECK-LABEL: declare void @rec_struct_mod(%rec_struct* byval)
+; CHECK-LABEL: declare void @rec_struct_mod(%rec_struct* nocapture nonnull readonly dereferenceable(8))
 
 define void @rec_call_sreg(%rec_problem_struct %r) {
   %tmp = extractvalue %rec_problem_struct %r, 0
@@ -127,8 +130,8 @@ define void @rec_call_sreg(%rec_problem_struct %r) {
 }
 
 ; non-compliant structs are correctly mapped and calls are changed
-; CHECK-LABEL: define void @rec_call_sreg(%rec_problem_struct.simplified* byval %r.ptr)
-; CHECK: call void %tmp(%rec_problem_struct.simplified* byval %r.sreg.ptr)
+; CHECK-LABEL: define void @rec_call_sreg(%rec_problem_struct.simplified* nocapture nonnull readonly dereferenceable(8) %r.ptr)
+; CHECK: call void %tmp(%rec_problem_struct.simplified* nocapture nonnull readonly dereferenceable(8) %r.sreg.ptr)
 
 declare void @pairs(%rec_pair_1)
 
@@ -139,14 +142,14 @@ define %rec_returning @rec_returning_fun(%rec_returning %str) {
 }
 
 ; pair structs
-; CHECK-LABEL: declare void @pairs(%rec_pair_1* byval)
-; CHECK-LABEL: define void @rec_returning_fun(%rec_returning.simplified* sret %retVal, %rec_returning.simplified* byval %str.ptr)
+; CHECK-LABEL: declare void @pairs(%rec_pair_1* nocapture nonnull readonly dereferenceable(8))
+; CHECK-LABEL: define void @rec_returning_fun(%rec_returning.simplified* nocapture nonnull sret dereferenceable(8) %retVal, %rec_returning.simplified* nocapture nonnull readonly dereferenceable(8) %str.ptr)
 ; CHECK-NEXT:   %ret = alloca %rec_returning.simplified
 ; CHECK-NEXT:   %str.sreg.ptr = alloca %rec_returning.simplified
 ; CHECK-NEXT:   %str.sreg = load %rec_returning.simplified, %rec_returning.simplified* %str.ptr
 ; CHECK-NEXT:   %tmp = extractvalue %rec_returning.simplified %str.sreg, 0
 ; CHECK-NEXT:   store %rec_returning.simplified %str.sreg, %rec_returning.simplified* %str.sreg.ptr
-; CHECK-NEXT:   call void %tmp(%rec_returning.simplified* sret %ret, %rec_returning.simplified* byval %str.sreg.ptr)
+; CHECK-NEXT:   call void %tmp(%rec_returning.simplified* nocapture nonnull sret dereferenceable(8) %ret, %rec_returning.simplified* nocapture nonnull readonly dereferenceable(8) %str.sreg.ptr)
 ; CHECK-NEXT:   %ret.sreg = load %rec_returning.simplified, %rec_returning.simplified* %ret
 ; CHECK-NEXT:   store %rec_returning.simplified %ret.sreg, %rec_returning.simplified* %retVal
 ; CHECK-NEXT:   ret void
@@ -158,13 +161,13 @@ define void @direct_caller(%direct_def %def) {
   ret void
 }
 
-; CHECK-LABEL: define void @direct_caller(%direct_def.simplified* byval %def.ptr)
+; CHECK-LABEL: define void @direct_caller(%direct_def.simplified* nocapture nonnull readonly dereferenceable(16) %def.ptr)
 ; CHECK-NEXT:  %param.ptr = alloca %struct
 ; CHECK-NEXT:  %def.sreg = load %direct_def.simplified, %direct_def.simplified* %def.ptr
 ; CHECK-NEXT:  %func = extractvalue %direct_def.simplified %def.sreg, 0
 ; CHECK-NEXT:  %param = extractvalue %direct_def.simplified %def.sreg, 1
 ; CHECK-NEXT:  store %struct %param, %struct* %param.ptr
-; CHECK-NEXT:  call void %func(%struct* byval %param.ptr)
+; CHECK-NEXT:  call void %func(%struct* nocapture nonnull readonly dereferenceable(8) %param.ptr)
 ; CHECK-NEXT:  ret void
 
 ; vararg functions are converted correctly
@@ -172,13 +175,13 @@ declare void @vararg_ok(i32, ...)
 ; CHECK-LABEL: declare void @vararg_ok(i32, ...)
 
 define void @vararg_problem(%rec_problem_struct %arg1, ...) {
-  ; CHECK-LABEL: define void @vararg_problem(%rec_problem_struct.simplified* byval %arg1.ptr, ...)
+  ; CHECK-LABEL: define void @vararg_problem(%rec_problem_struct.simplified* nocapture nonnull readonly dereferenceable(8) %arg1.ptr, ...)
    ret void
 }
 
 %vararg_fp_struct = type { i32, void (i32, ...)* }
 declare void @vararg_fp_fct(%vararg_fp_struct %arg)
-;CHECK-LABEL: declare void @vararg_fp_fct(%vararg_fp_struct* byval)
+;CHECK-LABEL: declare void @vararg_fp_fct(%vararg_fp_struct* nocapture nonnull readonly dereferenceable(16))
 
 define void @call_vararg(%vararg_fp_struct %param1, ...) {
   %fptr = extractvalue %vararg_fp_struct %param1, 1
@@ -186,7 +189,7 @@ define void @call_vararg(%vararg_fp_struct %param1, ...) {
   ret void
 }
 
-; CHECK-LABEL: define void @call_vararg(%vararg_fp_struct* byval %param1.ptr, ...)
+; CHECK-LABEL: define void @call_vararg(%vararg_fp_struct* nocapture nonnull readonly dereferenceable(16) %param1.ptr, ...)
 ; CHECK-NEXT:  %param1.sreg = load %vararg_fp_struct, %vararg_fp_struct* %param1.ptr
 ; CHECK-NEXT:  %fptr = extractvalue %vararg_fp_struct %param1.sreg, 1
 ; CHECK-NEXT:  call void (i32, ...) %fptr(i32 0, i32 1)
@@ -207,7 +210,7 @@ define void @vararg_fp_problem_call(%vararg_fp_problem_struct* byval %param) {
 ; CHECK-NEXT:  %fct = load void (%vararg_fp_problem_struct.simplified*)*, void (%vararg_fp_problem_struct.simplified*)** %fct_ptr
 ; CHECK-NEXT:  %param_for_call = load %vararg_fp_problem_struct.simplified, %vararg_fp_problem_struct.simplified* %param
 ; CHECK-NEXT:  store %vararg_fp_problem_struct.simplified %param_for_call, %vararg_fp_problem_struct.simplified* %param_for_call.ptr
-; CHECK-NEXT:  call void %fct(%vararg_fp_problem_struct.simplified* byval %param_for_call.ptr)
+; CHECK-NEXT:  call void %fct(%vararg_fp_problem_struct.simplified* nocapture nonnull readonly dereferenceable(8) %param_for_call.ptr)
 ; CHECK-NEXT:  ret void
 
 define void @call_with_array([4 x void(%struct)*] %fptrs, %struct %str) {
@@ -216,13 +219,13 @@ define void @call_with_array([4 x void(%struct)*] %fptrs, %struct %str) {
   ret void
 }
 
-; CHECK-LABEL: define void @call_with_array([4 x void (%struct*)*]* byval %fptrs.ptr, %struct* byval %str.ptr)
+; CHECK-LABEL: define void @call_with_array([4 x void (%struct*)*]* nocapture nonnull readonly dereferenceable(32) %fptrs.ptr, %struct* nocapture nonnull readonly dereferenceable(8) %str.ptr)
 ; CHECK-NEXT:  %str.sreg.ptr = alloca %struct
 ; CHECK-NEXT:  %fptrs.sreg = load [4 x void (%struct*)*], [4 x void (%struct*)*]* %fptrs.ptr
 ; CHECK-NEXT:  %str.sreg = load %struct, %struct* %str.ptr
 ; CHECK-NEXT:  %fptr = extractvalue [4 x void (%struct*)*] %fptrs.sreg, 2
 ; CHECK-NEXT:  store %struct %str.sreg, %struct* %str.sreg.ptr
-; CHECK-NEXT:  call void %fptr(%struct* byval %str.sreg.ptr)
+; CHECK-NEXT:  call void %fptr(%struct* nocapture nonnull readonly dereferenceable(8) %str.sreg.ptr)
 ; CHECK-NEXT:  ret void
 
 define void @call_with_array_ptr([4 x void(%struct)*]* %fptrs, %struct %str) {
@@ -232,13 +235,13 @@ define void @call_with_array_ptr([4 x void(%struct)*]* %fptrs, %struct %str) {
   ret void
 }
 
-; CHECK-LABEL: define void @call_with_array_ptr([4 x void (%struct*)*]* %fptrs, %struct* byval %str.ptr)
+; CHECK-LABEL: define void @call_with_array_ptr([4 x void (%struct*)*]* %fptrs, %struct* nocapture nonnull readonly dereferenceable(8) %str.ptr)
 ; CHECK-NEXT:  %str.sreg.ptr = alloca %struct
 ; CHECK-NEXT:  %str.sreg = load %struct, %struct* %str.ptr
 ; CHECK-NEXT:  %fptr_ptr = getelementptr [4 x void (%struct*)*], [4 x void (%struct*)*]* %fptrs, i32 0, i32 2
 ; CHECK-NEXT:  %fptr = load void (%struct*)*, void (%struct*)** %fptr_ptr
 ; CHECK-NEXT:  store %struct %str.sreg, %struct* %str.sreg.ptr
-; CHECK-NEXT:  call void %fptr(%struct* byval %str.sreg.ptr)
+; CHECK-NEXT:  call void %fptr(%struct* nocapture nonnull readonly dereferenceable(8) %str.sreg.ptr)
 ; CHECK-NEXT:  ret void
 
 define void @call_with_vector(<4 x void (%struct)*> %fptrs, %struct %str) {
@@ -247,12 +250,12 @@ define void @call_with_vector(<4 x void (%struct)*> %fptrs, %struct %str) {
   ret void
 }
 
-; CHECK-LABEL: define void @call_with_vector(<4 x void (%struct*)*> %fptrs, %struct* byval %str.ptr)
+; CHECK-LABEL: define void @call_with_vector(<4 x void (%struct*)*> %fptrs, %struct* nocapture nonnull readonly dereferenceable(8) %str.ptr)
 ; CHECK-NEXT:  %str.sreg.ptr = alloca %struct
 ; CHECK-NEXT:  %str.sreg = load %struct, %struct* %str.ptr
 ; CHECK-NEXT:  %fptr = extractelement <4 x void (%struct*)*> %fptrs, i32 2
 ; CHECK-NEXT:  store %struct %str.sreg, %struct* %str.sreg.ptr
-; CHECK-NEXT:  call void %fptr(%struct* byval %str.sreg.ptr)
+; CHECK-NEXT:  call void %fptr(%struct* nocapture nonnull readonly dereferenceable(8) %str.sreg.ptr)
 ; CHECK-NEXT:  ret void
 
 define void @call_with_array_vect([4 x <2 x void(%struct)*>] %fptrs, %struct %str) {
@@ -262,15 +265,34 @@ define void @call_with_array_vect([4 x <2 x void(%struct)*>] %fptrs, %struct %st
   ret void
 }
 
-; CHECK-LABEL: define void @call_with_array_vect([4 x <2 x void (%struct*)*>]* byval %fptrs.ptr, %struct* byval %str.ptr)
+; CHECK-LABEL: define void @call_with_array_vect([4 x <2 x void (%struct*)*>]* nocapture nonnull readonly dereferenceable(64) %fptrs.ptr, %struct* nocapture nonnull readonly dereferenceable(8) %str.ptr)
 ; CHECK-NEXT:  %str.sreg.ptr = alloca %struct
 ; CHECK-NEXT:  %fptrs.sreg = load [4 x <2 x void (%struct*)*>], [4 x <2 x void (%struct*)*>]* %fptrs.ptr
 ; CHECK-NEXT:  %str.sreg = load %struct, %struct* %str.ptr
 ; CHECK-NEXT:  %vect = extractvalue [4 x <2 x void (%struct*)*>] %fptrs.sreg, 2
 ; CHECK-NEXT:  %fptr = extractelement <2 x void (%struct*)*> %vect, i32 1
 ; CHECK-NEXT:  store %struct %str.sreg, %struct* %str.sreg.ptr
-; CHECK-NEXT:  call void %fptr(%struct* byval %str.sreg.ptr)
+; CHECK-NEXT:  call void %fptr(%struct* nocapture nonnull readonly dereferenceable(8) %str.sreg.ptr)
 ; CHECK-NEXT:  ret void
 
-; this is at the end, corresponds to the call marked as readonly
-; CHECK: attributes #1 = { readonly }
+; CHECK-LABEL: void @attributes0(%struct* nocapture nonnull sret dereferenceable(8) %retVal, i8 zeroext %a, i8 inreg %c, %struct* %b) #1
+define %struct @attributes0(i8 zeroext %a, i8 inreg %c, %struct* %b) minsize readonly {
+  %aa = load %struct, %struct* %b
+  ret %struct %aa
+}
+
+; CHECK-LABEL: zeroext i8 @attributes1(i8 zeroext %a, %struct* nocapture nonnull readonly dereferenceable(8) %b.ptr) #2
+define zeroext i8 @attributes1(i8 zeroext %a, %struct %b) minsize readonly {
+  ret i8 %a
+}
+
+; CHECK-LABEL: @constoperand
+define void @constoperand(%rec_returning* %a) {
+; CHECK-NEXT: %b = icmp eq %rec_returning.simplified* %a, bitcast (%rec_returning* @const_global to %rec_returning.simplified*)
+  %b = icmp eq %rec_returning* %a, @const_global
+  ret void
+}
+
+; CHECK: attributes #1 = { minsize }
+; CHECK: attributes #2 = { minsize readonly }
+; CHECK: attributes #3 = { readonly }
