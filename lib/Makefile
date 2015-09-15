@@ -16,7 +16,7 @@ PARALLEL_DIRS := IR AsmParser Bitcode Analysis Transforms CodeGen Target      \
 
 # @LOCALMOD-BEGIN
 ifeq ($(PNACL_BROWSER_TRANSLATOR),1)
-  PARALLEL_DIRS := $(filter-out Archive Linker, \
+  PARALLEL_DIRS := $(filter-out Archive ExecutionEngine Linker, \
                 $(PARALLEL_DIRS))
 endif
 # @LOCALMOD-END
