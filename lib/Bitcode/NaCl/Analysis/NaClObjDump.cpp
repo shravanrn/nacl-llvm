@@ -2371,7 +2371,15 @@ public:
   NaClDisFunctionParser(unsigned BlockID,
                         NaClDisBlockParser *EnclosingParser);
 
-  ~NaClDisFunctionParser() override {}
+  ~NaClDisFunctionParser() override {
+    NaClBcIndexSize_t FoundNumBbs = CurrentBbIndex + 1;
+    // Note: CurrentBbIndex == -1 if no records found.
+    if (FoundNumBbs == 0)
+      Errors() << "Function doesn't contain any basic blocks\n";
+    if (ExpectedNumBbs != FoundNumBbs)
+      Errors() << "Function expected " << ExpectedNumBbs
+               << " basic blocks. Found: " << FoundNumBbs << "\n";
+  }
 
   void PrintBlockHeader() override;
 
