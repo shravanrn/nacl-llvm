@@ -1,0 +1,13 @@
+; Test if we detect if the value symbol table appears after a function block.
+
+
+RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/symtab-after-fcn.tbc \
+RUN:   -output - | not pnacl-bcdis -no-records | FileCheck %s
+
+; CHECK:module {  // BlockID = 8
+; CHECK:  function void @f0() {  // BlockID = 12
+; CHECK:  }
+; CHECK:  valuesymtab {  // BlockID = 14
+; CHECK:Error({{.*}}): Module symbol table must appear before function blocks
+; CHECK:  }
+; CHECK:}

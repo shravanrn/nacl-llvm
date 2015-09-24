@@ -3352,6 +3352,9 @@ public:
   void PrintBlockHeader() override;
 
   void ProcessRecord() override;
+
+private:
+  bool FoundFunctionBlock = false;
 };
 
 NaClDisModuleParser::~NaClDisModuleParser() {
@@ -3398,10 +3401,13 @@ bool NaClDisModuleParser::ParseBlock(unsigned BlockID) {
     return Parser.ParseThisBlock();
   }
   case naclbitc::VALUE_SYMTAB_BLOCK_ID: {
+    if (FoundFunctionBlock)
+      Errors() << "Module symbol table must appear before function blocks\n";
     NaClDisValueSymtabParser Parser(BlockID, this);
     return Parser.ParseThisBlock();
   }
   case naclbitc::FUNCTION_BLOCK_ID: {
+    FoundFunctionBlock = true;
     NaClDisFunctionParser Parser(BlockID, this);
     return Parser.ParseThisBlock();
   }
