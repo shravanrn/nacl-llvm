@@ -27,6 +27,7 @@
 #include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <map>
 
 namespace {
@@ -3225,22 +3226,88 @@ void NaClDisFunctionParser::ProcessRecord() {
   case naclbitc::FUNC_CODE_INST_CALL_INDIRECT: {
     // CALL: [cc, fnid, arg0, arg1...]
     // CALL_INDIRECT: [cc, fnid, returnty, args...]
+    //
+    // Note: The difference between CALL and CALL_INDIRECT is that CALL has a
+    // reference to an explicit function declaration, while the CALL_INDIRECT
+    // is just an address. For CALL, we can infer the return type by looking up
+    // the type signature associated with the function declaration. For
+    // CALL_INDIRECT we can only infer the type signature via argument types,
+    // and the corresponding return type stored in CALL_INDIRECT record.
+    size_t ParamsStartIndex =
+        Record.GetCode() == naclbitc::FUNC_CODE_INST_CALL ? 2 : 3;
+    if (Values.size() < ParamsStartIndex) {
+      Errors() << "Call record expects at least " << ParamsStartIndex
+               << " arguments. Found: " << Values.size() << "\n";
+      break;
+    }
+
+    NaClBcIndexSize_t FcnId = RelativeToAbsId(Values[1]);
+
+    // Pull out signature/return type of call (if possible).
+    unsigned NumParams = Values.size() - ParamsStartIndex;
+    FunctionType *FcnType = nullptr;
+    Type *ReturnType = GetUnknownType();
+    bool IsIntrinsic = false;
     if (Record.GetCode() == naclbitc::FUNC_CODE_INST_CALL) {
-      if (Values.size() < 2) {
-        Errors() << "Call record expects at least 2 arguments. Found: "
-                 << Values.size() << "\n";
-        break;
+      Type *FcnTy = GetFunctionValueType(FcnId);
+      if (auto *FunctionTy = dyn_cast<FunctionType>(FcnTy)) {
+        FcnType = FunctionTy;
+        ReturnType = FcnType->getReturnType();
+        if (NumParams != FcnType->getNumParams()) {
+          Errors() << "Call has " << NumParams
+                   << " parameters. Signature expects: "
+                   << FcnType->getNumParams() << "\n";
+          // Recover by only checking parameters that can be compared
+          // to signature.
+          NumParams = std::min(NumParams, FcnType->getNumParams());
+        }
+      } else {
+        Errors() << "Invalid function signature: " << *FcnTy << "\n";
+        ReturnType = GetVoidType();
       }
-    } else if (Record.GetCode() == naclbitc::FUNC_CODE_INST_CALL_INDIRECT) {
-      if (Values.size() < 3) {
-        Errors() << "Call indirect record expects at least 3 arguments. Found: "
-                 << Values.size() << "\n";
-        break;
+      IsIntrinsic = Context->IsFunctionIntrinsic(FcnId);
+    } else { // Record.GetCode() == naclbitc::FUNC_CODE_INST_CALL_INDIRECT
+      ReturnType = GetType(Values[2]);
+      Type *AddressType = GetValueType(FcnId);
+      Type *PointerType = GetPointerType();
+      if (AddressType != PointerType) {
+        Errors() << "Call indirect address not " << *PointerType
+                 << ". Found: " << *AddressType << "\n";
       }
     }
+
+    // Extract out parameter ids and types.
+    SmallVector<std::pair<Type *, NaClBcIndexSize_t>, 8> Param;
+    for (unsigned I = 0; I < NumParams; ++I) {
+      NaClBcIndexSize_t ParamID = RelativeToAbsId(Values[ParamsStartIndex + I]);
+      Param.push_back(std::make_pair(GetValueType(ParamID), ParamID));
+    }
+
+    // Check return type.
+    if (!IsIntrinsic && !IgnorePNaClABIChecks &&
+        !PNaClABITypeChecker::isValidParamType(ReturnType)) {
+      Errors() << "Invalid return type: " << *ReturnType << "\n";
+    }
+
+    // Check parameter types.
+    if (FcnType) {
+      for (unsigned Index = 0; Index < NumParams; ++Index) {
+        Type *ParamType = Param[Index].first;
+        Type *ExpectedType = FcnType->getParamType(Index);
+        if (ParamType != ExpectedType) {
+          Errors() << "Parameter " << (Index + 1) << " mismatch: "
+                   << *ParamType << " and " << *ExpectedType << "\n";
+        } else if (!IsIntrinsic && !IgnorePNaClABIChecks &&
+                   !PNaClABITypeChecker::isValidParamType(ParamType)) {
+          Errors() << "Invalid type for parameter " << Index << ": "
+                   << *ParamType << "\n";
+        }
+      }
+    }
+
+    // Check calling conventions.
     unsigned IsTailCall = (Values[0] & 0x1);
     CallingConv::ID CallingConv;
-    NaClBcIndexSize_t FcnId = RelativeToAbsId(Values[1]);
     if (!naclbitc::DecodeCallingConv(Values[0]>>1, CallingConv))
       Errors() << "Call unknown calling convention:" << (Values[0]>>1) << "\n";
     if (!IgnorePNaClABIChecks &&
@@ -3249,39 +3316,13 @@ void NaClDisFunctionParser::ProcessRecord() {
                << PNaClABIProps::CallingConvName(CallingConv) << "("
                << CallingConv << ")\n";
     }
-    FunctionType *FcnType = 0;
-    Type *ReturnType = 0;
-    size_t ArgIndex = 2;
-    // Flag defining if type checking should be done on argument/return
-    // types.
-    bool CheckArgRetTypes = true;
-    if (Record.GetCode() == naclbitc::FUNC_CODE_INST_CALL) {
-      Type *FcnTy = GetFunctionValueType(FcnId);
-      if (FunctionType *FcnTyp = dyn_cast<FunctionType>(FcnTy)) {
-        // TODO(kschimpf) Add back signature checking once we know how
-        // to handle intrinsics (which can violate general signature
-        // rules).
-        CheckArgRetTypes = false;
-        FcnType = FcnTyp;
-        ReturnType = FcnType->getReturnType();
-      } else {
-        Errors() << "Invalid function signature: " << *FcnTy << "\n";
-        ReturnType = GetVoidType();
-      }
-    } else {
-      ReturnType = GetType(Values[2]);
-      ArgIndex = 3;
-    }
+
+    // Generate assembly instruction.
     if (!ReturnType->isVoidTy()) {
       Tokens() << NextInstId() << Space() << "=" << Space();
     }
     if (IsTailCall) {
       Tokens() << "tail" << Space();
-    }
-    if (CheckArgRetTypes &&
-        !IgnorePNaClABIChecks &&
-        !PNaClABITypeChecker::isValidParamType(ReturnType)) {
-      Errors() << "Invalid return type: " << *ReturnType << "\n";
     }
     Tokens() << "call" << Space();
     if (CallingConv != CallingConv::C) {
@@ -3290,37 +3331,20 @@ void NaClDisFunctionParser::ProcessRecord() {
     Tokens() << TokenizeType(ReturnType) << Space()
              << StartCluster() << GetBitcodeId(FcnId) << OpenParen()
              << StartCluster();
-    size_t ParamIndex = 0;
-    size_t NumParams = Values.size() + 1 - ArgIndex;
-    for (size_t i = ArgIndex; i < Values.size(); ++i, ++ParamIndex) {
-      NaClBcIndexSize_t ParamId = RelativeToAbsId(Values[i]);
-      Type *ParamType = GetValueType(ParamId);
-      if (CheckArgRetTypes &&
-          !IgnorePNaClABIChecks &&
-          !PNaClABITypeChecker::isValidParamType(ParamType)) {
-        Errors() << "invalid type for parameter " << i << ": "
-                 << *ParamType << "\n";
-      }
-      if (FcnType) {
-        if (ParamIndex < FcnType->getNumParams()) {
-          Type *ExpectedType = FcnType->getParamType(ParamIndex);
-          if (ParamType != ExpectedType) {
-            Warnings() << "Parameter " << (ParamIndex + 1) << " mismatch: "
-                       << *ParamType << " and " << *ExpectedType << "\n";
-          }
-        }
-        else if (ParamIndex == FcnType->getNumParams()) {
-          Warnings() << "Call expects " << FcnType->getNumParams()
-                     << " arguments. Got: " << NumParams << "\n";
-        }
-      }
-      if (i > ArgIndex) {
+
+    bool IsFirstArg = true;
+    for (const auto Pair : Param) {
+      if (IsFirstArg)
+        IsFirstArg = false;
+      else
         Tokens() << Comma() << FinishCluster() << Space() << StartCluster();
-      }
-      Tokens() << TokenizeType(ParamType) << Space() << GetBitcodeId(ParamId);
+      Tokens() << TokenizeType(Pair.first) << Space()
+               << GetBitcodeId(Pair.second);
     }
     Tokens() << CloseParen() << Semicolon() << FinishCluster()
              << FinishCluster();
+
+    // Install instruction.
     if (!ReturnType->isVoidTy()) InstallInstType(ReturnType);
     break;
   }

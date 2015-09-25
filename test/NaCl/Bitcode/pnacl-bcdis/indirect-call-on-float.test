@@ -1,0 +1,12 @@
+; Test if we check the type of a call address in an indirect call.
+
+RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/indirect-call-on-float.tbc \
+RUN:   -output - | not pnacl-bcdis -no-records | FileCheck %s
+
+; CHECK:  function void @f1(i32 %p0, float %p1) {  // BlockID = 12
+; CHECK:    blocks 1;
+; CHECK:  %b0:
+; CHECK:    call void %p1();
+; CHECK:Error({{.*}}): Call indirect address not i32. Found: float
+; CHECK:    ret void;
+; CHECK:  }
