@@ -814,6 +814,11 @@ public:
   /// Instruction indices are only associated with instructions that
   /// generate values.
   void InstallInstType(Type *Ty, NaClBcIndexSize_t Index) {
+    if (Index > MaxValuedInst) {
+      Errors() << "Can't define type " << *Ty << " for "
+               << BitcodeId('v', Index) << ". Index too large\n";
+      return;
+    }
     while (InstIdType.size() <= Index) {
       InstIdType.push_back(UnknownType);
     }
@@ -833,7 +838,7 @@ public:
   /// Note: Instruction indices are only associated with instructions
   /// that generate values.
   Type *GetInstType(NaClBcIndexSize_t Index) {
-    if (Index >= InstIdType.size()) {
+    if (Index >= InstIdType.size() || Index > MaxValuedInst) {
       Errors() << "Can't find type for " << BitcodeId('v', Index) << "\n";
       return UnknownType;
     }
@@ -846,6 +851,11 @@ public:
     return NumValuedInsts;
   }
 
+  /// Reduces the maximum instruction index to the given value.
+  void restrictMaxValuedInstruction(NaClBcIndexSize_t Max) {
+    MaxValuedInst = std::min(Max, MaxValuedInst);
+  }
+
   /// Resets index counters local to a defined function.
   void ResetLocalCounters() {
     ParamIdType.clear();
@@ -853,6 +863,7 @@ public:
     NumConstants = 0;
     InstIdType.clear();
     NumValuedInsts = 0;
+    MaxValuedInst = std::numeric_limits<NaClBcIndexSize_t>::max();
   }
 
   /// Returns the bitcode id associated with the absolute value index
@@ -1141,6 +1152,9 @@ private:
   std::vector<Type*> InstIdType;
   // The number of valued instructions currently defined.
   NaClBcIndexSize_t NumValuedInsts;
+  // The maximum number of instruction values, based on function block size.
+  NaClBcIndexSize_t MaxValuedInst =
+     std::numeric_limits<NaClBcIndexSize_t>::max();
   // Models an unknown type.
   Type *UnknownType;
   // Models the pointer type.
@@ -2380,6 +2394,15 @@ public:
     if (ExpectedNumBbs != FoundNumBbs)
       Errors() << "Function expected " << ExpectedNumBbs
                << " basic blocks. Found: " << FoundNumBbs << "\n";
+  }
+
+  void EnterBlock(unsigned NumWords) final {
+    // Note: Bitstream defines words as 32-bit values. Further, we know that all
+    // records are minimally defined by a two-bit abbreviation.
+    constexpr NaClBcIndexSize_t MinRecordSize =
+        (sizeof(NaClBcIndexSize_t) * CHAR_BIT) >> 2;
+    Context->restrictMaxValuedInstruction(NumWords * MinRecordSize);
+    NaClDisBlockParser::EnterBlock(NumWords);
   }
 
   void PrintBlockHeader() override;

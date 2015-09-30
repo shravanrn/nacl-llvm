@@ -1,0 +1,12 @@
+; Test if we recognize a forward reference that can't be in a function block.
+
+RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/bad-var-fwdref.tbc \
+RUN:   -output - | not pnacl-bcdis -no-records | FileCheck %s
+
+; CHECK:  function void @f0(i32 %p0) {  // BlockID = 12
+; CHECK:    blocks 1;
+; CHECK:  %b0:
+; CHECK:    declare i32 %v3105555532;
+; CHECK:Error({{.*}}): Can't define type i32 for %v3105555532. Index too large
+; CHECK:    ret void;
+; CHECK:  }
