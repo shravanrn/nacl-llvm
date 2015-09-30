@@ -1,0 +1,21 @@
+; Test that we check that alignment on blocks can't be greater than 2**29.
+
+RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/bad-global-alignment.tbc \
+RUN:   -output - | not pnacl-thaw -o /dev/null 2>&1 \
+RUN:             | FileCheck --check-prefix=ERROR %s
+
+ERROR: Alignment can't be greater than 2**29. Found: 2**30
+
+RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/bad-global-alignment.tbc \
+RUN:   -output - | not pnacl-bcdis -no-records | FileCheck %s
+
+; CHECK:module {  // BlockID = 8
+; CHECK:  version 1;
+; CHECK:  globals {  // BlockID = 19
+; CHECK:    count 1;
+; CHECK:    var @g0, align 0,
+; CHECK:Error({{.*}}): Alignment can't be greater than 2**29. Found: 2**30
+; CHECK:      zerofill 4;
+; CHECK:  }
+; CHECK:}
+

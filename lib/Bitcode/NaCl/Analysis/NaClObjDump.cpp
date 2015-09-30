@@ -957,6 +957,14 @@ public:
     }
   }
 
+  /// Maximun exponent that can be used for alignments.
+  static const unsigned MaxAlignmentExponent = 29;
+
+  /// Convert alignment exponent (i.e. power of two (or zero)) to the
+  /// corresponding alignment to use. If alignment is too large, it generates
+  /// an error message and returns 0.
+  unsigned getAlignmentValue(uint64_t Exponent);
+
   // ******************************************************
   // The following return the corresponding methods/fields
   // from the the assembly formatter/objdumper.
@@ -1169,6 +1177,20 @@ private:
   // Holds the number of global abbreviations defined for each block.
   std::map<unsigned, NaClBcIndexSize_t> GlobalAbbrevsCountMap;
 };
+
+static_assert(
+    (1u << NaClDisTopLevelParser::MaxAlignmentExponent)
+    == Value::MaximumAlignment,
+    "Inconsistency between Value.MaxAlignment and PNaCl alignment limit");
+
+unsigned NaClDisTopLevelParser::getAlignmentValue(uint64_t Exponent) {
+  if (Exponent > MaxAlignmentExponent + 1) {
+    Errors() << "Alignment can't be greater than 2**" << MaxAlignmentExponent
+             << ". Found: 2**" << (Exponent - 1) << "\n";
+    return 0;
+  }
+  return (1 << static_cast<unsigned>(Exponent)) >> 1;
+}
 
 BitcodeId NaClDisTopLevelParser::GetBitcodeId(NaClBcIndexSize_t Index) {
   if (Index < NumFunctions) {
@@ -1989,7 +2011,7 @@ void NaClDisGlobalsParser::ProcessRecord() {
                << NumInitializers << " more initializers\n";
       InsertCloseInitializer();
     }
-    uint32_t Alignment = (1 << Values[0]) >> 1;
+    uint32_t Alignment = Context->getAlignmentValue(Values[0]);
     Tokens() << StartCluster() << (Values[1] ? "const" : "var")
              << Space() << NextGlobalId()
              << Comma() << FinishCluster() << Space()
@@ -2587,11 +2609,6 @@ private:
                << " out of range. Not in [1," << ExpectedNumBbs << "]\n";
     }
   }
-
-  /// Convert alignment exponent (i.e. power of two (or zero)) to the
-  /// corresponding alignment to use. If alignment is too large, it generates
-  /// an error message and returns 0.
-  unsigned getAlignmentValue(uint64_t Exponent);
 };
 
 NaClDisFunctionParser::NaClDisFunctionParser(
@@ -2816,23 +2833,6 @@ const char *NaClDisFunctionParser::GetFcmpPredicate(uint32_t Opcode) {
   case CmpInst::FCMP_TRUE:
     return "true";
   }
-}
-
-namespace {
-
-static const unsigned MaxAlignmentExponent = 29;
-static_assert(
-    (1u << MaxAlignmentExponent) == Value::MaximumAlignment,
-    "Inconsistency between Value.MaxAlignment and PNaCl alignment limit");
-}
-
-unsigned NaClDisFunctionParser::getAlignmentValue(uint64_t Exponent) {
-  if (Exponent > MaxAlignmentExponent + 1) {
-    Errors() << "Alignment can't be greater than 2**" << MaxAlignmentExponent
-             << ". Found: 2**" << (Exponent - 1) << "\n";
-    return 0;
-  }
-  return (1 << static_cast<unsigned>(Exponent)) >> 1;
 }
 
 bool NaClDisFunctionParser::ParseBlock(unsigned BlockID) {
@@ -3076,7 +3076,7 @@ void NaClDisFunctionParser::ProcessRecord() {
     NaClBcIndexSize_t SizeOp = RelativeToAbsId(Values[0]);
     Type* SizeType = GetValueType(SizeOp);
     BitcodeId SizeId(GetBitcodeId(SizeOp));
-    unsigned Alignment = getAlignmentValue(Values[1]);
+    unsigned Alignment = Context->getAlignmentValue(Values[1]);
     if (!IgnorePNaClABIChecks && !PNaClABIProps::isAllocaSizeType(SizeType))
       Errors() << PNaClABIProps::ExpectedAllocaSizeType() << "\n";
     // TODO(kschimpf) Are there any constraints on alignment?
@@ -3096,7 +3096,7 @@ void NaClDisFunctionParser::ProcessRecord() {
                << Values.size() << "\n";
       break;
     }
-    unsigned Alignment = getAlignmentValue(Values[1]);
+    unsigned Alignment = Context->getAlignmentValue(Values[1]);
     Type *LoadType = GetType(Values[2]);
     VerifyScalarOrVectorOp("load", LoadType);
     Context->VerifyMemoryAccessAlignment("load", LoadType, Alignment);
@@ -3116,7 +3116,7 @@ void NaClDisFunctionParser::ProcessRecord() {
                << Values.size() << "\n";
       break;
     }
-    unsigned Alignment = getAlignmentValue(Values[2]);
+    unsigned Alignment = Context->getAlignmentValue(Values[2]);
     NaClBcIndexSize_t Val = RelativeToAbsId(Values[1]);
     Type *ValType = GetValueType(Val);
     VerifyScalarOrVectorOp("store", ValType);
