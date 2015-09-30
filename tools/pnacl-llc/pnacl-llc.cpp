@@ -146,6 +146,13 @@ AcceptBitcodeRecordText(
     cl::desc(
         "Accept textual form of PNaCl bitcode records (i.e. not .ll assembly)"),
     cl::init(false));
+
+static cl::opt<bool>
+ExitSuccessOnFatalError(
+    "exit-success-on-fatal-error",
+    cl::desc(
+        "exit with success status 0 when reporting fatal errors"),
+    cl::init(false));
 #endif
 
 static cl::opt<unsigned>
@@ -175,6 +182,33 @@ SplitModuleSched(
 static int compileModule(StringRef ProgramName);
 
 #if !defined(PNACL_BROWSER_TRANSLATOR)
+// Reports fatal error message, and then exits with success status 0.
+void reportFatalErrorThenExitSuccess(void *UserData,
+                                     const std::string &Reason,
+                                     bool GenCrashDiag) {
+  (void)UserData;
+  (void)GenCrashDiag;
+
+  // Note: This code is (mostly) copied from llvm/lib/Support/ErrorHandling.cpp
+
+  // Blast the result out to stderr.  We don't try hard to make sure this
+  // succeeds (e.g. handling EINTR) and we can't use errs() here because
+  // raw ostreams can call report_fatal_error.
+  llvm::SmallVector<char, 64> Buffer;
+  llvm::raw_svector_ostream OS(Buffer);
+  OS << "LLVM ERROR: " << Reason << "\n";
+  llvm::StringRef MessageStr = OS.str();
+  ssize_t written = ::write(2, MessageStr.data(), MessageStr.size());
+  (void)written; // If something went wrong, we deliberately just give up.
+
+  // If we reached here, we are failing ungracefully. Run the interrupt handlers
+  // to make sure any special cleanups get done, in particular that we remove
+  // files registered with RemoveFileOnSignal.
+  llvm::sys::RunInterruptHandlers();
+
+  exit(0);
+}
+
 static std::unique_ptr<tool_output_file>
 GetOutputStream(const char *TargetName,
                 Triple::OSType OS,
@@ -256,6 +290,9 @@ int llc_main(int argc, char **argv) {
 
 #if defined(PNACL_BROWSER_TRANSLATOR)
   install_fatal_error_handler(getSRPCErrorHandler(), nullptr);
+#else
+  if (ExitSuccessOnFatalError)
+    llvm::install_fatal_error_handler(reportFatalErrorThenExitSuccess, nullptr);
 #endif
 
   // Initialize targets first, so that --version shows registered targets.
