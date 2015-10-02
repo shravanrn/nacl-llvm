@@ -49,15 +49,9 @@
 #include "ThreadedFunctionQueue.h"
 #include "ThreadedStreamingCache.h"
 
+#include <cstdio>
 #include <pthread.h>
 #include <memory>
-#if defined(HAVE_UNISTD_H)
-# include <unistd.h>
-#endif
-#if defined(_MSC_VER)
-# include <io.h>
-# include <fcntl.h>
-#endif
 
 using namespace llvm;
 
@@ -205,7 +199,8 @@ void reportFatalErrorThenExitSuccess(void *UserData,
   llvm::raw_svector_ostream OS(Buffer);
   OS << "LLVM ERROR: " << Reason << "\n";
   llvm::StringRef MessageStr = OS.str();
-  ssize_t written = ::write(2, MessageStr.data(), MessageStr.size());
+  ssize_t written =
+      ::fwrite(MessageStr.data(), sizeof(char), MessageStr.size(), ::stderr);
   (void)written; // If something went wrong, we deliberately just give up.
 
   // If we reached here, we are failing ungracefully. Run the interrupt handlers
