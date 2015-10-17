@@ -91,7 +91,8 @@ void AddFixedArguments(ArgStringList *CmdLineArgs) {
 bool AddDefaultCPU(ArgStringList *CmdLineArgs) {
 #if defined(__pnacl__)
   switch (__builtin_nacl_target_arch()) {
-  case PnaclTargetArchitectureX86_32: {
+  case PnaclTargetArchitectureX86_32:
+  case PnaclTargetArchitectureX86_32_NonSFI: {
     CmdLineArgs->push_back("-mcpu=pentium4m");
     break;
   }
@@ -99,7 +100,8 @@ bool AddDefaultCPU(ArgStringList *CmdLineArgs) {
     CmdLineArgs->push_back("-mcpu=x86-64");
     break;
   }
-  case PnaclTargetArchitectureARM_32: {
+  case PnaclTargetArchitectureARM_32:
+  case PnaclTargetArchitectureARM_32_NonSFI: {
     CmdLineArgs->push_back("-mcpu=cortex-a9");
     break;
   }
@@ -145,11 +147,21 @@ ArgStringList *GetDefaultCommandLine() {
   // Then those particular to a platform.
   static const char *llc_args_x8632[] = {"-mtriple=i686-none-nacl-gnu",
                                          nullptr};
+  // The -malign-double option is only needed if not all the ABI simplification
+  // passes have been run on a pexe, for more details see:
+  // https://code.google.com/p/nativeclient/issues/detail?id=3913
+  static const char *llc_args_x8632_nonsfi[] = {"-mtriple=i686-linux-gnu",
+                                                "-malign-double",
+                                                "-mtls-use-call",
+                                                nullptr};
   static const char *llc_args_x8664[] = {"-mtriple=x86_64-none-nacl-gnu",
                                          nullptr};
   static const char *llc_args_arm[] = {"-mtriple=armv7a-none-nacl-gnueabi",
                                        "-mattr=+neon", "-float-abi=hard",
                                        nullptr};
+  static const char *llc_args_arm_nonsfi[] = {"-mtriple=armv7a-linux-gnueabihf",
+                                              "-mtls-use-call",
+                                              nullptr};
   static const char *llc_args_mips32[] = {"-mtriple=mipsel-none-nacl-gnu",
                                           nullptr};
 
@@ -160,12 +172,20 @@ ArgStringList *GetDefaultCommandLine() {
     llc_args = llc_args_x8632;
     break;
   }
+  case PnaclTargetArchitectureX86_32_NonSFI: {
+    llc_args = llc_args_x8632_nonsfi;
+    break;
+  }
   case PnaclTargetArchitectureX86_64: {
     llc_args = llc_args_x8664;
     break;
   }
   case PnaclTargetArchitectureARM_32: {
     llc_args = llc_args_arm;
+    break;
+  }
+  case PnaclTargetArchitectureARM_32_NonSFI: {
+    llc_args = llc_args_arm_nonsfi;
     break;
   }
   case PnaclTargetArchitectureMips_32: {

@@ -240,16 +240,15 @@ public:
   /// getVendor - Get the parsed vendor type of this triple.
   VendorType getVendor() const { return Vendor; }
 
-  // @LOCALMOD-BEGIN -- hardcode NaCl for NaCl builds, to help
-  // prune OS-specific code that is litered all over and not
-  // cleanly separated.
-#if defined(__native_client__)
-  OSType getOS() const { return NaCl; }
-  ObjectFormatType getObjectFormat() const { return ELF; }
-#else
   /// getOS - Get the parsed operating system type of this triple.
   OSType getOS() const { return OS; }
 
+  // @LOCALMOD-BEGIN -- hardcode ELF for NaCl builds, to help prune
+  // object-format-specific code that is littered all over and not cleanly
+  // separated.
+#if defined(__native_client__)
+  ObjectFormatType getObjectFormat() const { return ELF; }
+#else
   /// getFormat - Get the object format for this triple.
   ObjectFormatType getObjectFormat() const { return ObjectFormat; }
 #endif
@@ -403,9 +402,9 @@ public:
   bool isOSCygMing() const { return false; }
   bool isOSMSVCRT() const { return false; }
   bool isOSWindows() const { return false; }
-  bool isOSNaCl() const { return true; }
+  bool isOSNaCl() const { return getOS() == Triple::NaCl; }
   bool isOSEmscripten() const { return false; }
-  bool isOSLinux() const { return false; }
+  bool isOSLinux() const { return getOS() == Triple::Linux; }
   bool isOSBinFormatELF() const { return true; }
   bool isOSBinFormatCOFF() const { return false; }
   bool isOSBinFormatMachO() const { return false; }
