@@ -161,6 +161,7 @@ ArgStringList *GetDefaultCommandLine() {
                                        nullptr};
   static const char *llc_args_arm_nonsfi[] = {"-mtriple=armv7a-linux-gnueabihf",
                                               "-mtls-use-call",
+                                              "-arm-enable-dwarf-eh=1",
                                               nullptr};
   static const char *llc_args_mips32[] = {"-mtriple=mipsel-none-nacl-gnu",
                                           nullptr};
