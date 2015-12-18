@@ -179,13 +179,25 @@ X86RegisterInfo::getPointerRegClass(const MachineFunction &MF,
     if (Subtarget.isTarget64BitLP64() || Subtarget.isTargetNaCl64())
       return &X86::GR64_NOSPRegClass;
     return &X86::GR32_NOSPRegClass;
-  case 2: // Available for tailcall (not callee-saved GPRs).
-    if (IsWin64)
+  case 2: // NOREX GPRs.
+    // @LOCALMOD -- NaCl is ILP32, but 32-bit pointers become 64-bit
+    // after sandboxing (clobbers a full 64-bit reg).
+    if (Subtarget.isTarget64BitLP64() || Subtarget.isTargetNaCl64())
+      return &X86::GR64_NOREXRegClass;
+    return &X86::GR32_NOREXRegClass;
+  case 3: // NOREX GPRs except the stack pointer (for encoding reasons).
+    // @LOCALMOD -- NaCl is ILP32, but 32-bit pointers become 64-bit
+    // after sandboxing (clobbers a full 64-bit reg).
+    if (Subtarget.isTarget64BitLP64() || Subtarget.isTargetNaCl64())
+      return &X86::GR64_NOREX_NOSPRegClass;
+    return &X86::GR32_NOREX_NOSPRegClass;
+  case 4: // Available for tailcall (not callee-saved GPRs).
+    const Function *F = MF.getFunction();
+    if (IsWin64 || (F && F->getCallingConv() == CallingConv::X86_64_Win64))
       return &X86::GR64_TCW64RegClass;
     else if (Is64Bit)
       return &X86::GR64_TCRegClass;
 
-    const Function *F = MF.getFunction();
     bool hasHipeCC = (F ? F->getCallingConv() == CallingConv::HiPE : false);
     if (hasHipeCC)
       return &X86::GR32RegClass;
