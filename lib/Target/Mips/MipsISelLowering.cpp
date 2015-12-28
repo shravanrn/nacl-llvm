@@ -1674,44 +1674,10 @@ SDValue MipsTargetLowering::lowerBlockAddress(SDValue Op,
 // @LOCALMOD-BEGIN
 SDValue MipsTargetLowering::
 GetNaClThreadPointer(SelectionDAG &DAG, SDLoc DL) const {
-  EVT PtrVT = getPointerTy();
-  SDValue ThreadPointer;
-  if (llvm::TLSUseCall) {
-    unsigned PtrSize = PtrVT.getSizeInBits();
-    IntegerType *PtrTy = Type::getIntNTy(*DAG.getContext(), PtrSize);
-
-    // We must check whether the __nacl_read_tp is defined in the module because
-    // local and global pic functions are called differently. If the function
-    // is local the address is calculated with %got and %lo relocations.
-    // Otherwise, the address is calculated with %call16 relocation.
-    const Function *NaClReadTp = NULL;
-    const Module *M = DAG.getMachineFunction().getFunction()->getParent();
-    for (Module::const_iterator I = M->getFunctionList().begin(),
-           E = M->getFunctionList().end(); I != E; ++I) {
-      if (I->getName() == "__nacl_read_tp") {
-        NaClReadTp = I;
-        break;
-      }
-    }
-
-    SDValue TlsReadTp;
-    if (NaClReadTp == NULL)
-      TlsReadTp = DAG.getExternalSymbol("__nacl_read_tp", PtrVT);
-    else
-      TlsReadTp = DAG.getGlobalAddress(NaClReadTp, DL, PtrVT);
-
-    ArgListTy Args;
-    TargetLowering::CallLoweringInfo CLI(DAG);
-    CLI.setDebugLoc(DL).setChain(DAG.getEntryNode())
-      .setCallee(CallingConv::C, PtrTy, TlsReadTp, std::move(Args), 0);
-    std::pair<SDValue, SDValue> CallResult = LowerCallTo(CLI);
-
-    ThreadPointer = CallResult.first;
-  } else {
-    ThreadPointer = DAG.getCopyFromReg(DAG.getEntryNode(), DL,
-                                       Mips::T8, PtrVT);
-  }
-  return ThreadPointer;
+  SDValue ThreadPointer = DAG.getRegister(Mips::T8, getPointerTy());
+  return DAG.getLoad(getPointerTy(), DL,
+                     DAG.getEntryNode(), ThreadPointer,
+                     MachinePointerInfo(), false, false, false, 0);
 }
 // @LOCALMOD-END
 
