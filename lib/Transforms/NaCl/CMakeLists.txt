@@ -4,6 +4,7 @@ add_llvm_library(LLVMNaClTransforms
   CanonicalizeMemIntrinsics.cpp
   CleanupUsedGlobalsMetadata.cpp
   ConstantInsertExtractElementIndex.cpp
+  ConvertToPSO.cpp
   ExceptionInfoWriter.cpp
   ExpandArithWithOverflow.cpp
   ExpandByVal.cpp

@@ -398,6 +398,7 @@ int main(int argc, char **argv) {
   initializeCanonicalizeMemIntrinsicsPass(Registry);
   initializeCleanupUsedGlobalsMetadataPass(Registry);
   initializeConstantInsertExtractElementIndexPass(Registry);
+  initializeConvertToPSOPass(Registry);
   initializeExpandAllocasPass(Registry);
   initializeExpandArithWithOverflowPass(Registry);
   initializeExpandByValPass(Registry);

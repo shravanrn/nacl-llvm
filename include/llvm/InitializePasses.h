@@ -305,6 +305,7 @@ void initializeBackendCanonicalizePass(PassRegistry&);
 void initializeCanonicalizeMemIntrinsicsPass(PassRegistry&);
 void initializeCleanupUsedGlobalsMetadataPass(PassRegistry&);
 void initializeConstantInsertExtractElementIndexPass(PassRegistry&);
+void initializeConvertToPSOPass(PassRegistry&);
 void initializeExpandAllocasPass(PassRegistry&);
 void initializeExpandArithWithOverflowPass(PassRegistry&);
 void initializeExpandByValPass(PassRegistry&);

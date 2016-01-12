@@ -43,6 +43,7 @@ FunctionPass *createResolvePNaClIntrinsicsPass();
 ModulePass *createAddPNaClExternalDeclsPass();
 ModulePass *createCanonicalizeMemIntrinsicsPass();
 ModulePass *createCleanupUsedGlobalsMetadataPass();
+ModulePass *createConvertToPSOPass();
 ModulePass *createExpandArithWithOverflowPass();
 ModulePass *createExpandByValPass();
 ModulePass *createExpandCtorsPass();
