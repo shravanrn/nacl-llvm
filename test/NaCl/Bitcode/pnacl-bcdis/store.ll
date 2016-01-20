@@ -7,7 +7,7 @@
 define void @GoodTests(i32 %p0) {
 
 ; CHECK:         {{.*}}|    1: <65535, 11, 2>        |    constants {  // BlockID = 11
-; CHECK-NEXT:    {{.*}}|      3: <1, 1>              |      i32:
+; CHECK-NEXT:    {{.*}}|      3: <1, 0>              |      i32:
 ; CHECK-NEXT:    {{.*}}|      3: <4, 6>              |        %c0 = i32 3;
 ; CHECK-NEXT:    {{.*}}|      3: <1, 10>             |      <4 x i32>:
 ; CHECK-NEXT:    {{.*}}|      3: <3>                 |        %c1 = <4 x i32> undef;
@@ -106,7 +106,7 @@ define void @GoodTests(i32 %p0) {
 define void @BadTests(i32 %p0) {
 
 ; CHECK:         {{.*}}|    1: <65535, 11, 2>        |    constants {  // BlockID = 11
-; CHECK-NEXT:    {{.*}}|      3: <1, 1>              |      i32:
+; CHECK-NEXT:    {{.*}}|      3: <1, 0>              |      i32:
 ; CHECK-NEXT:    {{.*}}|      3: <4, 6>              |        %c0 = i32 3;
 ; CHECK-NEXT:    {{.*}}|      3: <1, 15>             |      <16 x i1>:
 ; CHECK-NEXT:    {{.*}}|      3: <3>                 |        %c1 = <16 x i1> undef;

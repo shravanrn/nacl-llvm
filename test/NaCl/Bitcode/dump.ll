@@ -54,11 +54,11 @@ merge:                                            ; preds = %false, %true
 ; DR:     <NUMENTRY op0=7/>
 ; DR:     <INTEGER op0=32/>
 ; DR:     <VOID/>
-; DR:     <INTEGER op0=1/>
 ; DR:     <INTEGER op0=8/>
+; DR:     <INTEGER op0=1/>
 ; DR:     <FUNCTION op0=0 op1=0 op2=0/>
 ; DR:     <FUNCTION op0=0 op1=1/>
-; DR:     <FUNCTION op0=0 op1=1 op2=2/>
+; DR:     <FUNCTION op0=0 op1=1 op2=3/>
 ; DR:   </TYPE_BLOCK_ID>
 ; DR:   <FUNCTION op0=4 op1=0 op2=1 op3=0/>
 ; DR:   <FUNCTION op0=5 op1=0 op2=0 op3=0/>
@@ -172,11 +172,11 @@ merge:                                            ; preds = %false, %true
 ; DRWD:     <NUMENTRY abbrev='UNABBREVIATED' op0=7/>
 ; DRWD:     <INTEGER abbrev='UNABBREVIATED' op0=32/>
 ; DRWD:     <VOID abbrev='UNABBREVIATED'/>
-; DRWD:     <INTEGER abbrev='UNABBREVIATED' op0=1/>
 ; DRWD:     <INTEGER abbrev='UNABBREVIATED' op0=8/>
+; DRWD:     <INTEGER abbrev='UNABBREVIATED' op0=1/>
 ; DRWD:     <FUNCTION abbrev=4 op0=0 op1=0 op2=0/>
 ; DRWD:     <FUNCTION abbrev=4 op0=0 op1=1/>
-; DRWD:     <FUNCTION abbrev=4 op0=0 op1=1 op2=2/>
+; DRWD:     <FUNCTION abbrev=4 op0=0 op1=1 op2=3/>
 ; DRWD:   </TYPE_BLOCK_ID abbrev='END_BLOCK'>
 ; DRWD:   <FUNCTION abbrev='UNABBREVIATED' op0=4 op1=0 op2=1
 ; DRWD:             op3=0/>

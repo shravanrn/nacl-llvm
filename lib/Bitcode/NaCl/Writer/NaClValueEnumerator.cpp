@@ -89,9 +89,13 @@ NaClValueEnumerator::NaClValueEnumerator(const Module *M) {
 
     for (Function::const_iterator BB = F->begin(), E = F->end(); BB != E; ++BB)
       for (BasicBlock::const_iterator I = BB->begin(), E = BB->end(); I!=E;++I){
-        // Don't generate types for elided pointer casts!
-        if (IsElidedCast(I))
+        // For elided pointer casts, add the type(s) of the elided value, which
+        // may be defined elsewhere.
+        const Value *ElidedI = ElideCasts(I);
+        if (ElidedI != I) {
+          EnumerateOperandType(ElidedI);
           continue;
+        }
 
         if (const SwitchInst *SI = dyn_cast<SwitchInst>(I)) {
           // Handle switch instruction specially, so that we don't
