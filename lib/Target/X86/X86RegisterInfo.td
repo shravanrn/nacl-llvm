@@ -335,11 +335,8 @@ def GR16 : RegisterClass<"X86", [i16], 16,
                          (add AX, CX, DX, SI, DI, BX, BP, SP,
                               R8W, R9W, R10W, R11W, R14W, R15W, R12W, R13W)>;
 
-// GR32 - 32-bit GPRs. This oddly includes EIP, which isn't accurate, since
-// EIP isn't really a register and it can't be used anywhere except in an
-// address, but it doesn't cause trouble.
 def GR32 : RegisterClass<"X86", [i32], 32,
-                         (add EAX, ECX, EDX, ESI, EDI, EBX, EBP, ESP, EIP,
+                         (add EAX, ECX, EDX, ESI, EDI, EBX, EBP, ESP,
                               R8D, R9D, R10D, R11D, R14D, R15D, R12D, R13D)>;
 
 // GR64 - 64-bit GPRs. This oddly includes RIP, which isn't accurate, since
