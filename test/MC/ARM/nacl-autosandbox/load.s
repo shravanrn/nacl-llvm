@@ -281,3 +281,8 @@
 //CHECK-NEXT: 	bicne	r1, r1, #-1073741824
 //CHECK-NEXT: 	ldrne	r0, [r1], r2, lsl #8
 //CHECK-NEXT: 	.bundle_unlock
+
+        dmb sy
+//CHECK:  dmb sy
+        dmb ish
+//CHECK:  dmb ish

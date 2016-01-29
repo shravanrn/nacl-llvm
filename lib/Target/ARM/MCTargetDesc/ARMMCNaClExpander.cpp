@@ -356,8 +356,10 @@ void ARM::ARMMCNaClExpander::expandLoadStore(const MCInst &Inst,
   case ARM::STMDB_UPD:
   case ARM::STMIB_UPD:
 
+  case ARM::VSTMDIA:
   case ARM::VSTMDIA_UPD:
   case ARM::VSTMDDB_UPD:
+  case ARM::VSTMSIA:
   case ARM::VSTMSIA_UPD:
   case ARM::VSTMSDB_UPD:
 
@@ -366,8 +368,10 @@ void ARM::ARMMCNaClExpander::expandLoadStore(const MCInst &Inst,
   case ARM::LDMDB_UPD:
   case ARM::LDMIB_UPD:
 
+  case ARM::VLDMDIA:
   case ARM::VLDMDIA_UPD:
   case ARM::VLDMDDB_UPD:
+  case ARM::VLDMSIA:
   case ARM::VLDMSIA_UPD:
   case ARM::VLDMSDB_UPD:
 
@@ -382,6 +386,9 @@ void ARM::ARMMCNaClExpander::expandLoadStore(const MCInst &Inst,
   case ARM::LDMIB:
     return sandboxBaseDisp(Inst, *InstInfo, Inst.getOperand(0).getReg(), Out,
                            STI);
+  case ARM::DMB:
+    // DMB is mayLoad but has no memory operands and needs no sandboxing
+    return Out.EmitInstruction(Inst, STI);
   }
 
   int MemIdx = getMemIdx(Inst, *InstInfo);
