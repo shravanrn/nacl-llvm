@@ -282,7 +282,20 @@
 //CHECK-NEXT: 	ldrne	r0, [r1], r2, lsl #8
 //CHECK-NEXT: 	.bundle_unlock
 
+
+// dmb and adr end up getting mayLoad or mayStore flags set, and so end up
+// being processed by the expander. Ensure they are not modified.
         dmb sy
 //CHECK:  dmb sy
         dmb ish
 //CHECK:  dmb ish
+// adr encodings are different based on whether the label is before or after the
+// instruction
+a:      nop
+        adr r1, a
+// CHECK: adr r1, a
+        adr r0, b
+// CHECK: adr r0, b
+b:      nop
+// CHECK: ldr r0, b
+        ldr r0, b

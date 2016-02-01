@@ -386,13 +386,15 @@ void ARM::ARMMCNaClExpander::expandLoadStore(const MCInst &Inst,
   case ARM::LDMIB:
     return sandboxBaseDisp(Inst, *InstInfo, Inst.getOperand(0).getReg(), Out,
                            STI);
-  case ARM::DMB:
-    // DMB is mayLoad but has no memory operands and needs no sandboxing
-    return Out.EmitInstruction(Inst, STI);
   }
 
   int MemIdx = getMemIdx(Inst, *InstInfo);
-  assert(MemIdx != -1);
+  // Some instructions have the mayLoad/mayStore bits but no memory operands,
+  // e.g. DMB, or have expression operands (e.g. LDR with a label operand or
+  // ADR). If there are no memory operands, or the memory operand is not a reg,
+  // don't modify the instruction.
+  if (MemIdx == -1 || Inst.getOperand(MemIdx).isExpr())
+    return Out.EmitInstruction(Inst, STI);
 
   unsigned BaseReg = Inst.getOperand(MemIdx).getReg();
   bool PostIncrement = false;
