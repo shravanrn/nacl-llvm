@@ -249,17 +249,21 @@ static MCInst getAddrInstr(const MCInst &Inst, const MCInstrInfo &II, int MemIdx
 
   unsigned PredReg;
   ARMCC::CondCodes Pred = getPredicate(Inst, II, PredReg);
-
   MCInst Add;
-  Add.setOpcode(ARM::ADDrsi);
+
+  // An ADDrsi op with a shift type of no_shift is equivalent to an ADDrr op;
+  // the asm printer does not care about the distinction and prints it correctly
+  // but the object file encoder asserts that the shift type of ADDrsi isn't
+  // no_shift. So create ADDrr when applicable.
+  Add.setOpcode(ShOp == ARM_AM::no_shift ? ARM::ADDrr : ARM::ADDrsi);
   Add.addOperand(MCOperand::CreateReg(Target));
   Add.addOperand(Inst.getOperand(MemIdx));
   Add.addOperand(Inst.getOperand(MemIdx + 1));
-  Add.addOperand(MCOperand::CreateImm(ARM_AM::getSORegOpc(ShOp, Offset)));
+  if (ShOp != ARM_AM::no_shift)
+    Add.addOperand(MCOperand::CreateImm(ARM_AM::getSORegOpc(ShOp, Offset)));
   Add.addOperand(MCOperand::CreateImm(Pred));
   Add.addOperand(MCOperand::CreateReg(PredReg));
   Add.addOperand(MCOperand::CreateReg(0));
-
   return Add;
 }
 
