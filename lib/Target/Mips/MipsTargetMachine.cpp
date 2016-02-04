@@ -236,6 +236,7 @@ void MipsPassConfig::addIRPasses() {
   // @LOCALMOD-START
 #if !defined(PNACL_BROWSER_TRANSLATOR)
   if (DirectToNaCl) {
+    addPass(createExpandVarArgsPass());
     addPass(createExpandByValPass());
 
     addPass(createAddPNaClExternalDeclsPass());
