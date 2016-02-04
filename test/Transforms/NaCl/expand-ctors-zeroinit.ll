@@ -9,9 +9,9 @@
 ; RUN: opt < %s -nacl-expand-ctors -S | FileCheck %s
 
 ; If llvm.global_ctors is zeroinitializer, it should be treated the
-; same as an empty array.
+; same as an empty array and no symbols should be defined.
 
 @llvm.global_ctors = appending global [0 x { i32, void ()* }] zeroinitializer
 
-; CHECK: @__init_array_start = internal constant [0 x void ()*] zeroinitializer
-; CHECK: @__fini_array_start = internal constant [0 x void ()*] zeroinitializer
+; CHECK-NOT: __init_array_start
+; CHECK-NOT: __fini_array_start

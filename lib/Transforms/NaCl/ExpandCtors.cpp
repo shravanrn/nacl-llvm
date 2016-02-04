@@ -112,6 +112,15 @@ static void defineFuncArray(Module &M, const char *LlvmArrayName,
     Array->eraseFromParent();
   }
 
+  // Optimisation passes assume that global variables are non-empty and don't
+  // alias, which implies &__init_array_start != &__init_array_end but that's
+  // not true when the llvm.global_ctors or llvm.global_dtors are empty.
+  //
+  // C libraries (newlib and musl) use weak references to these variables, so we
+  // can leave them undefined (because we run GlobalCleanup after ExpandCtors).
+  if (Funcs.empty())
+    return;
+
   Type *FuncTy = FunctionType::get(Type::getVoidTy(M.getContext()), false);
   Type *FuncPtrTy = FuncTy->getPointerTo();
   ArrayType *ArrayTy = ArrayType::get(FuncPtrTy, Funcs.size());

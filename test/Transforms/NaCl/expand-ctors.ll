@@ -15,7 +15,7 @@
 @__init_array_end = extern_weak global [0 x void ()*]
 
 ; CHECK: @__init_array_start = internal constant [3 x void ()*] [void ()* @init_func_B, void ()* @init_func_C, void ()* @init_func_A]
-; CHECK: @__fini_array_start = internal constant [0 x void ()*] zeroinitializer
+; CHECK-NOT: __fini_array_start
 
 define void @init_func_A() { ret void }
 define void @init_func_B() { ret void }

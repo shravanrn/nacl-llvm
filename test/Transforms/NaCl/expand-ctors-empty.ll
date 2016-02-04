@@ -6,7 +6,7 @@
 ; RUN: opt < %s -nacl-expand-ctors -S | FileCheck %s
 
 ; If llvm.global_ctors is not present, it is treated as if it is an
-; empty array, and __{init,fini}_array_start are defined anyway.
+; empty array, and __{init,fini}_array_start should not be defined.
 
-; CHECK: @__init_array_start = internal constant [0 x void ()*] zeroinitializer
-; CHECK: @__fini_array_start = internal constant [0 x void ()*] zeroinitializer
+; CHECK-NOT: __init_array_start
+; CHECK-NOT: __fini_array_start
