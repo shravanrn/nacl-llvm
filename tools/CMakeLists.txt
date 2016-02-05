@@ -61,6 +61,7 @@ add_llvm_tool_subdirectory(pnacl-bcdis)
 add_llvm_tool_subdirectory(pnacl-bcfuzz)
 add_llvm_tool_subdirectory(pnacl-freeze)
 add_llvm_tool_subdirectory(pnacl-thaw)
+add_llvm_tool_subdirectory(pnacl-addnames)
 
 add_llvm_tool_subdirectory(llvm-c-test)
 
