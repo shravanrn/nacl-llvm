@@ -33,6 +33,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Module.h"
@@ -89,19 +90,24 @@ INITIALIZE_PASS(ConvertToPSO, "convert-to-pso",
                 false, false)
 
 bool ConvertToPSO::runOnModule(Module &M) {
+  LLVMContext &C = M.getContext();
   DataLayout DL(&M);
-  Type *PtrType = Type::getInt8Ty(M.getContext())->getPointerTo();
-  Type *IntPtrType = DL.getIntPtrType(M.getContext());
+  Type *PtrType = Type::getInt8Ty(C)->getPointerTo();
+  Type *IntPtrType = DL.getIntPtrType(C);
 
-  // Creates a new GlobalVariable containing the name of Val.  Uses Name
-  // for the name of the GlobalVariable.
-  auto createNameString = [&](Value *Val, const char *Name) {
-    Constant *Str = ConstantDataArray::getString(
-        M.getContext(), Val->getName());
-    Constant *StrVar = new GlobalVariable(M, Str->getType(), true,
-                                          GlobalValue::InternalLinkage,
-                                          Str, Name);
-    return ConstantExpr::getBitCast(StrVar, PtrType);
+  // A table of strings which contains all imported and exported symbol names.
+  SmallString<1024> StringTable;
+
+  // Enters the name of a symbol into the string table, and record
+  // the index at which the symbol is stored in the list of names.
+  auto createStringTableEntry = [&](SmallVectorImpl<Constant *> *NameOffsets,
+                                    const StringRef Name) {
+    // Identify the offset in the StringTable that will contain the symbol name.
+    NameOffsets->push_back(ConstantInt::get(IntPtrType, StringTable.size()));
+
+    // Copy the name into the string table, along with the null terminator.
+    StringTable.append(Name);
+    StringTable.push_back(0);
   };
 
   // In order to simplify the task of processing relocations inside
@@ -114,8 +120,9 @@ bool ConvertToPSO::runOnModule(Module &M) {
   delete Pass;
 
   // Process imports.
-  SmallVector<Constant *, 32> ImportNames;
   SmallVector<Constant *, 32> ImportPtrs;
+  // Indexes into the StringTable for the names of exported symbols.
+  SmallVector<Constant *, 32> ImportNames;
   for (GlobalVariable &Var : M.globals()) {
     if (!Var.hasInitializer())
       continue;
@@ -132,14 +139,14 @@ bool ConvertToPSO::runOnModule(Module &M) {
         if (auto GV = getReference(Element, &Addend)) {
           // Calculate the address that needs relocating.
           Value *Indexes[] = {
-            ConstantInt::get(M.getContext(), APInt(32, 0)),
-            ConstantInt::get(M.getContext(), APInt(32, I)),
+            ConstantInt::get(C, APInt(32, 0)),
+            ConstantInt::get(C, APInt(32, I)),
           };
           Constant *Addr = ConstantExpr::getGetElementPtr(
               Init->getType(), &Var, Indexes);
           // Record the relocation.
           ImportPtrs.push_back(ConstantExpr::getBitCast(Addr, PtrType));
-          ImportNames.push_back(createNameString(GV, "import_str"));
+          createStringTableEntry(&ImportNames, GV->getName());
           // Replace the original reference with the addend value.
           Element = ConstantInt::get(Element->getType(), Addend);
           Modified = true;
@@ -152,8 +159,7 @@ bool ConvertToPSO::runOnModule(Module &M) {
         // FlattenGlobals' normal form, because it will contain i32s rather
         // than i8 arrays.  However, the later pass of FlattenGlobals will
         // restore the normal form.
-        Var.setInitializer(
-            ConstantStruct::getAnon(M.getContext(), Elements, true));
+        Var.setInitializer(ConstantStruct::getAnon(C, Elements, true));
       }
     } else {
       // The initializer is a single SimpleElement.
@@ -161,7 +167,7 @@ bool ConvertToPSO::runOnModule(Module &M) {
       if (auto GV = getReference(Init, &Addend)) {
         // Record the relocation.
         ImportPtrs.push_back(ConstantExpr::getBitCast(&Var, PtrType));
-        ImportNames.push_back(createNameString(GV, "import_str"));
+        createStringTableEntry(&ImportNames, GV->getName());
         // Replace the original reference with the addend value.
         Var.setInitializer(ConstantInt::get(Init->getType(), Addend));
       }
@@ -169,8 +175,9 @@ bool ConvertToPSO::runOnModule(Module &M) {
   }
 
   // Process exports.
-  SmallVector<Constant *, 32> ExportNames;
   SmallVector<Constant *, 32> ExportPtrs;
+  // Indexes into the StringTable for the names of exported symbols.
+  SmallVector<Constant *, 32> ExportNames;
 
   auto processGlobalValue = [&](GlobalValue &GV) {
     if (GV.isDeclaration()) {
@@ -189,8 +196,9 @@ bool ConvertToPSO::runOnModule(Module &M) {
     if (GV.getLinkage() != GlobalValue::ExternalLinkage)
       return;
 
-    ExportNames.push_back(createNameString(&GV, "export_str"));
+    // Actually store the pointer to be exported.
     ExportPtrs.push_back(ConstantExpr::getBitCast(&GV, PtrType));
+    createStringTableEntry(&ExportNames, GV.getName());
     GV.setLinkage(GlobalValue::InternalLinkage);
   };
 
@@ -202,24 +210,36 @@ bool ConvertToPSO::runOnModule(Module &M) {
     processGlobalValue(*Iter++);
   }
 
-  // Set up an array of pointers.
+  // Set up an array.
   auto createArray = [&](const char *Name,
-                         SmallVectorImpl<Constant *> *Array) -> Constant * {
+                         SmallVectorImpl<Constant *> *Array,
+                         Type *ElementType) -> Constant * {
     Constant *Contents = ConstantArray::get(
-        ArrayType::get(PtrType, Array->size()), *Array);
+        ArrayType::get(ElementType, Array->size()), *Array);
     return new GlobalVariable(
         M, Contents->getType(), true, GlobalValue::InternalLinkage,
         Contents, Name);
   };
 
+  // Set up string of exported names.
+  Constant *StringTableArray = ConstantDataArray::getString(
+      C, StringRef(StringTable.data(), StringTable.size()), false);
+  Constant *StringTableVar = new GlobalVariable(
+      M, StringTableArray->getType(), true, GlobalValue::InternalLinkage,
+      StringTableArray, "string_table");
+
   Constant *PsoRoot[] = {
+    // String Table
+    StringTableVar,
+
     // Exports
-    createArray("export_ptrs", &ExportPtrs),
-    createArray("export_names", &ExportNames),
+    createArray("export_ptrs", &ExportPtrs, PtrType),
+    createArray("export_names", &ExportNames, IntPtrType),
     ConstantInt::get(IntPtrType, ExportPtrs.size()),
+
     // Imports
-    createArray("import_ptrs", &ImportPtrs),
-    createArray("import_names", &ImportNames),
+    createArray("import_ptrs", &ImportPtrs, PtrType),
+    createArray("import_names", &ImportNames, IntPtrType),
     ConstantInt::get(IntPtrType, ImportPtrs.size()),
   };
   Constant *PsoRootConst = ConstantStruct::getAnon(PsoRoot);
