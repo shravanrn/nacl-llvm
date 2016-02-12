@@ -71,6 +71,9 @@ static cl::opt<bool>
 PrintImmHex("print-imm-hex", cl::init(false),
             cl::desc("Prefer hex format for immediate values"));
 
+static cl::list<std::string>
+DefineSymbol("defsym", cl::desc("Defines a symbol to be an integer constant"));
+
 enum OutputFileType {
   OFT_Null,
   OFT_AssemblyFile,
@@ -317,6 +320,28 @@ static int AsLexInput(SourceMgr &SrcMgr, MCAsmInfo &MAI,
   return Error;
 }
 
+static int fillCommandLineSymbols(MCAsmParser &Parser){
+  for(auto &I: DefineSymbol){
+    auto Pair = StringRef(I).split('=');
+    if(Pair.second.empty()){
+      errs() << "error: defsym must be of the form: sym=value: " << I;
+      return 1;
+    }
+    int64_t Value;
+    if(Pair.second.getAsInteger(0, Value)){
+      errs() << "error: Value is not an integer: " << Pair.second;
+      return 1;
+    }
+    auto &Context = Parser.getContext();
+    // @LOCALMOD-BEGIN
+    auto Symbol = Context.GetOrCreateSymbol(Pair.first);
+    Parser.getStreamer().EmitAssignment(Symbol,
+                                        MCConstantExpr::Create(Value, Context));
+    // @LOCALMOD-END
+  }
+  return 0;
+}
+
 static int AssembleInput(const char *ProgName, const Target *TheTarget,
                          SourceMgr &SrcMgr, MCContext &Ctx, MCStreamer &Str,
                          MCAsmInfo &MAI, MCSubtargetInfo &STI,
@@ -332,6 +357,9 @@ static int AssembleInput(const char *ProgName, const Target *TheTarget,
     return 1;
   }
 
+  int SymbolResult = fillCommandLineSymbols(*Parser);
+  if(SymbolResult)
+    return SymbolResult;
   Parser->setShowParsedOperands(ShowInstOperands);
   Parser->setTargetParser(*TAP);
 
@@ -450,7 +478,7 @@ int main(int argc, char **argv) {
 
   Triple T(TripleName); // @LOCALMOD
 
-  MCInstPrinter *IP = NULL;
+  MCInstPrinter *IP = nullptr;
   if (FileType == OFT_AssemblyFile) {
     IP = TheTarget->createMCInstPrinter(Triple(TripleName), OutputAsmVariant,
                                         *MAI, *MCII, *MRI);
@@ -474,7 +502,6 @@ int main(int argc, char **argv) {
     Str.reset(TheTarget->createAsmStreamer(
         Ctx, std::move(FOut), /*asmverbose*/ true,
         /*useDwarfDirectory*/ true, IP, CE, MAB, ShowInst));
-
     // @LOCALMOD-START
     if (T.isOSNaCl()) {
       Str->InitSections(NoExecStack);
@@ -499,6 +526,7 @@ int main(int argc, char **argv) {
                                                 /*DWARFMustBeAtTheEnd*/ false));
     if (NoExecStack)
       Str->InitSections(true);
+
     // @LOCALMOD-BEGIN
     if (T.isOSNaCl()) {
       // If the above non-localmod does InitSections unconditionally,
