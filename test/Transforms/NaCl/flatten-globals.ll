@@ -1,6 +1,9 @@
 ; RUN: opt -flatten-globals %s -S | FileCheck %s
 ; RUN: opt -flatten-globals %s -S | FileCheck %s -check-prefix=CLEANED
 
+; Check that the pass can handle its own output (idempotence).
+; RUN: opt -flatten-globals -flatten-globals %s -S
+
 target datalayout = "p:32:32:32"
 
 
@@ -186,6 +189,9 @@ target datalayout = "p:32:32:32"
     i8, 
     i8* blockaddress(@func_with_block, %label), i32 100)
 ; CHECK: @block_addend = global i32 add (i32 ptrtoint (i8* blockaddress(@func_with_block, %label) to i32), i32 100)
+
+@add_expr = global i32 add (i32 ptrtoint (%ptrs1* @ptrs1 to i32), i32 8)
+; CHECK: @add_expr = global i32 add (i32 ptrtoint (<{ i32, [8 x i8] }>* @ptrs1 to i32), i32 8)
 
 
 ; Special cases

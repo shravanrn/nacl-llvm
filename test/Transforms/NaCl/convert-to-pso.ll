@@ -54,6 +54,8 @@ define i8* @my_read_tp() {
 @local_var = internal global i32 0
 @local_reloc_var = global i32* @local_var
 ; CHECK: @local_reloc_var = internal global i32 ptrtoint ([4 x i8]* @local_var to i32)
+@local_reloc_var_addend = global i32* getelementptr (i32, i32* @local_var, i32 1)
+; CHECK: @local_reloc_var_addend = internal global i32 add (i32 ptrtoint ([4 x i8]* @local_var to i32), i32 4)
 
 
 ; Variables that we expect the pass to define:
