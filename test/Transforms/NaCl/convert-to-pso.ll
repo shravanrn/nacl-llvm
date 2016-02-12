@@ -56,4 +56,43 @@ define i8* @my_read_tp() {
 ; CHECK: @local_reloc_var = internal global i32 ptrtoint ([4 x i8]* @local_var to i32)
 
 
+; Variables that we expect the pass to define:
+
+; This variable should be non-constant because it is filled out at load
+; time.  Check for a specific size here to ensure that this doesn't import
+; any symbols unnecessarily.
+; CHECK: @__globals_table__ = internal global [12 x i8] zeroinitializer
+
 ; CHECK: @__pnacl_pso_root = constant
+
+
+declare void @imported_func()
+
+define void ()* @get_imported_func() {
+  ret void ()* @imported_func
+}
+; CHECK: define internal i32 @get_imported_func()
+; CHECK-NEXT: %__globals_table__.bc =
+; CHECK-NEXT: %imported_func = load i32, i32* %__globals_table__.bc
+; CHECK-NEXT: ret i32 %imported_func
+
+define i32* @get_imported_var() {
+  ret i32* @imported_var
+}
+; CHECK: define internal i32 @get_imported_var() {
+; CHECK-NEXT: %expanded = ptrtoint {{.*}} @__globals_table__ to i32
+; CHECK-NEXT: %gep = add i32 %expanded
+; CHECK-NEXT: %gep.asptr = inttoptr i32 %gep to i32*
+; CHECK-NEXT: %imported_var = load i32, i32* %gep.asptr
+; CHECK-NEXT: ret i32 %imported_var
+
+define i32* @get_imported_var_addend() {
+  ret i32* getelementptr (i32, i32* @imported_var_addend, i32 1)
+}
+; CHECK: define internal i32 @get_imported_var_addend()
+; CHECK-NEXT: %expanded = ptrtoint {{.*}} @__globals_table__ to i32
+; CHECK-NEXT: %gep = add i32 %expanded
+; CHECK-NEXT: %gep.asptr = inttoptr i32 %gep to i32*
+; CHECK-NEXT: %imported_var_addend = load i32, i32* %gep.asptr
+; CHECK-NEXT: %gep4 = add i32 %imported_var_addend, 4
+; CHECK-NEXT: ret i32 %gep4

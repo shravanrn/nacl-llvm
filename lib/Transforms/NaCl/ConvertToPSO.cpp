@@ -23,13 +23,15 @@
 // Currently, this pass implements:
 //
 //  * Exporting symbols
-//  * Importing symbols when referenced by global variable initializers
+//  * Importing symbols
+//     * when referenced by global variable initializers
+//     * when referenced by functions
 //
 // The following features are not implemented yet:
 //
-//  * Importing symbols when referenced by functions
 //  * Building a hash table of exported symbols to allow O(1)-time lookup
 //  * Support for thread-local variables
+//  * Support for lazy binding (i.e. lazy symbol resolution)
 //
 //===----------------------------------------------------------------------===//
 
@@ -82,6 +84,107 @@ namespace {
     errs() << "Initializer value not handled: " << *Init << "\n";
     report_fatal_error("ConvertToPSO: Value is not a SimpleElement");
   }
+
+  // This function adds a level of indirection to references by functions
+  // to imported GlobalValues.  Any time a function refers to a symbol that
+  // is defined outside the module, we modify the function to read the
+  // symbol's value from a global variable which we call the "globals
+  // table".  The dynamic linker can then relocate the module by filling
+  // out the globals table.
+  //
+  // For example, suppose we have a C library that contains this:
+  //
+  //   extern int imported_var;
+  //
+  //   int *get_imported_var() {
+  //     return &imported_var;
+  //   }
+  //
+  // We transform that code to the equivalent of this:
+  //
+  //   static void *__globals_table__[] = { &imported_var, ... };
+  //
+  //   int *get_imported_var() {
+  //     return __globals_table__[0];
+  //   }
+  //
+  // The relocation to "addr_of_imported_var" is then recorded by a later
+  // part of the ConvertToPSO pass.
+  //
+  // The globals table does the same job as the Global Offset Table (GOT)
+  // in ELF.  It is slightly different from the GOT because it is
+  // implemented as a different level of abstraction.  In ELF, the GOT is a
+  // linker feature.  Relocations can be relative to the GOT's base
+  // address, and there can only be one GOT per ELF module.  The compiler
+  // and assembler can generate GOT-relative relocations (when compiling
+  // with "-fPIC"); the linker resolves these and generates the GOT.
+  //
+  // In contrast, in PNaCl the globals table is introduced at the level of
+  // LLVM IR.  Unlike the GOT, the globals table is not special.  Nothing
+  // needs to know about it outside this function.  (However, this would
+  // change if we were to add support for lazy binding.)
+  void buildGlobalsTable(Module &M) {
+    // We need to replace some uses of GlobalValues with "load"
+    // instructions, but that only works if functions don't contain
+    // ConstantExprs referencing those GlobalValues, because we can't
+    // modify a ConstantExpr to refer to an instruction.  To address this,
+    // we first convert all ConstantExprs inside functions into
+    // instructions by running the ExpandConstantExpr pass.
+    FunctionPass *Pass = createExpandConstantExprPass();
+    for (Function &Func : M.functions())
+      Pass->runOnFunction(Func);
+    delete Pass;
+
+    // Search for all references to imported functions/variables by
+    // functions.
+    SmallVector<std::pair<Use *, unsigned>, 32> Refs;
+    SmallVector<Constant *, 32> TableEntries;
+    auto processGlobalValue = [&](GlobalValue &GV) {
+      if (GV.isDeclaration()) {
+        bool NeedsEntry = false;
+        for (Use &U : GV.uses()) {
+          if (isa<Instruction>(U.getUser())) {
+            NeedsEntry = true;
+            Refs.push_back(std::make_pair(&U, TableEntries.size()));
+          }
+        }
+        if (NeedsEntry) {
+          TableEntries.push_back(&GV);
+        }
+      }
+    };
+    for (Function &Func : M.functions()) {
+      if (!Func.isIntrinsic())
+        processGlobalValue(Func);
+    }
+    for (GlobalValue &Var : M.globals()) {
+      processGlobalValue(Var);
+    }
+
+    if (TableEntries.empty())
+      return;
+
+    // Create a GlobalVariable for the globals table.
+    Constant *TableData = ConstantStruct::getAnon(
+        M.getContext(), TableEntries, true);
+    auto TableVar = new GlobalVariable(
+        M, TableData->getType(), false, GlobalValue::InternalLinkage,
+        TableData, "__globals_table__");
+
+    // Update use sites to load addresses from the globals table.
+    for (auto &Ref : Refs) {
+      Value *GV = Ref.first->get();
+      Instruction *InsertPt = cast<Instruction>(Ref.first->getUser());
+      Value *Indexes[] = {
+        ConstantInt::get(M.getContext(), APInt(32, 0)),
+        ConstantInt::get(M.getContext(), APInt(32, Ref.second)),
+      };
+      Value *TableEntryAddr = GetElementPtrInst::Create(
+          TableData->getType(), TableVar, Indexes,
+          GV->getName() + ".gt", InsertPt);
+      Ref.first->set(new LoadInst(TableEntryAddr, GV->getName(), InsertPt));
+    }
+  }
 }
 
 char ConvertToPSO::ID = 0;
@@ -94,6 +197,8 @@ bool ConvertToPSO::runOnModule(Module &M) {
   DataLayout DL(&M);
   Type *PtrType = Type::getInt8Ty(C)->getPointerTo();
   Type *IntPtrType = DL.getIntPtrType(C);
+
+  buildGlobalsTable(M);
 
   // A table of strings which contains all imported and exported symbol names.
   SmallString<1024> StringTable;
