@@ -46,6 +46,18 @@
 using namespace llvm;
 
 namespace {
+  // This version number can be incremented when the format of the PSO data
+  // is changed in an incompatible way.
+  //
+  // For the time being, this is intended only as a convenience for making
+  // cross-repo changes, because the PSO format is interpreted by code in
+  // the native_client repo.  The PSO format is not intended to be stable
+  // yet.
+  //
+  // If the format is changed in a compatible way, an alternative is to
+  // increment TOOLCHAIN_FEATURE_VERSION instead.
+  const int PSOFormatVersion = 1;
+
   // This is a ModulePass because it inherently operates on a whole module.
   class ConvertToPSO : public ModulePass {
   public:
@@ -334,6 +346,8 @@ bool ConvertToPSO::runOnModule(Module &M) {
       StringTableArray, "string_table");
 
   Constant *PsoRoot[] = {
+    ConstantInt::get(IntPtrType, PSOFormatVersion),
+
     // String Table
     StringTableVar,
 
