@@ -26,10 +26,10 @@
 //  * Importing symbols
 //     * when referenced by global variable initializers
 //     * when referenced by functions
+//  * Building a hash table of exported symbols to allow O(1)-time lookup
 //
 // The following features are not implemented yet:
 //
-//  * Building a hash table of exported symbols to allow O(1)-time lookup
 //  * Support for thread-local variables
 //  * Support for lazy binding (i.e. lazy symbol resolution)
 //
@@ -56,7 +56,7 @@ namespace {
   //
   // If the format is changed in a compatible way, an alternative is to
   // increment TOOLCHAIN_FEATURE_VERSION instead.
-  const int PSOFormatVersion = 1;
+  const int PSOFormatVersion = 2;
 
   // This is a ModulePass because it inherently operates on a whole module.
   class ConvertToPSO : public ModulePass {
@@ -67,6 +67,23 @@ namespace {
     }
 
     virtual bool runOnModule(Module &M);
+  };
+
+  // This is Dan Bernstein's string hash algorithm.
+  uint32_t hashString(const std::string &S) {
+    uint32_t H = 5381;
+    for (unsigned char Ch : S)
+      H = H * 33 + Ch;
+    return H;
+  }
+
+  class SymbolTableEntry {
+  public:
+    SymbolTableEntry(Constant *Val) :
+      Value(Val), Hash(hashString(Value->getName())) {}
+
+    Constant *Value;
+    uint32_t Hash;
   };
 
   // This takes a SimpleElement from FlattenGlobals' normal form.  If the
@@ -217,8 +234,12 @@ bool ConvertToPSO::runOnModule(Module &M) {
 
   // Enters the name of a symbol into the string table, and record
   // the index at which the symbol is stored in the list of names.
-  auto createStringTableEntry = [&](SmallVectorImpl<Constant *> *NameOffsets,
-                                    const StringRef Name) {
+  auto createSymbol = [&](SmallVectorImpl<Constant *> *NameOffsets,
+                          SmallVectorImpl<Constant *> *ValuePtrs,
+                          const StringRef Name, Constant *Addr) {
+    // Identify the symbol's address (for exports) or the address which should
+    // be updated to include the symbol (for imports).
+    ValuePtrs->push_back(ConstantExpr::getBitCast(Addr, PtrType));
     // Identify the offset in the StringTable that will contain the symbol name.
     NameOffsets->push_back(ConstantInt::get(IntPtrType, StringTable.size()));
 
@@ -261,9 +282,7 @@ bool ConvertToPSO::runOnModule(Module &M) {
           };
           Constant *Addr = ConstantExpr::getGetElementPtr(
               Init->getType(), &Var, Indexes);
-          // Record the relocation.
-          ImportPtrs.push_back(ConstantExpr::getBitCast(Addr, PtrType));
-          createStringTableEntry(&ImportNames, GV->getName());
+          createSymbol(&ImportNames, &ImportPtrs, GV->getName(), Addr);
           // Replace the original reference with the addend value.
           Element = ConstantInt::get(Element->getType(), Addend);
           Modified = true;
@@ -282,14 +301,15 @@ bool ConvertToPSO::runOnModule(Module &M) {
       // The initializer is a single SimpleElement.
       uint64_t Addend;
       if (auto GV = getReference(Init, &Addend)) {
-        // Record the relocation.
-        ImportPtrs.push_back(ConstantExpr::getBitCast(&Var, PtrType));
-        createStringTableEntry(&ImportNames, GV->getName());
+        createSymbol(&ImportNames, &ImportPtrs, GV->getName(), &Var);
         // Replace the original reference with the addend value.
         Var.setInitializer(ConstantInt::get(Init->getType(), Addend));
       }
     }
   }
+
+  // This acts roughly like the ".dynsym" section of an ELF file.
+  SmallVector<SymbolTableEntry, 32> ExportedSymbolTableVector;
 
   // Process exports.
   SmallVector<Constant *, 32> ExportPtrs;
@@ -314,8 +334,7 @@ bool ConvertToPSO::runOnModule(Module &M) {
       return;
 
     // Actually store the pointer to be exported.
-    ExportPtrs.push_back(ConstantExpr::getBitCast(&GV, PtrType));
-    createStringTableEntry(&ExportNames, GV.getName());
+    ExportedSymbolTableVector.push_back(SymbolTableEntry(&GV));
     GV.setLinkage(GlobalValue::InternalLinkage);
   };
 
@@ -327,12 +346,131 @@ bool ConvertToPSO::runOnModule(Module &M) {
     processGlobalValue(*Iter++);
   }
 
-  // Set up an array.
+  // The following section uses the ExportedSymbolTableVector to generate a hash
+  // table, which, embeded in PSL Root, can be used to quickly look up symbols
+  // based on a string name.
+  //
+  // The hash table is based on the GNU ELF hash section
+  // (https://blogs.oracle.com/ali/entry/gnu_hash_elf_sections).
+  //
+  // Using the hash table requires the following function be known:
+  //   uint32_t hashString(const char *str)
+  //
+  // The hash table contains the following fields:
+  //   size_t NumBuckets
+  //   int32_t *Buckets[0 ... NumBuckets]
+  //   uint32_t *HashChains[0 ... NumChainEntries]
+  // Where NumChainEntries is known to be the number of exported symbols.
+  //
+  // The hash table requires that the list of ExportNames is sorted by
+  // "hashString(export_symbol) % NumBuckets".
+  //
+  // Given an input string, Str, a lookup is done as follows:
+  // 1) H = hashString(Str) is calculated.
+  // 2) BucketIndex = H % NumBuckets is calculated, as an index into the list of
+  //    buckets.
+  // 3) BucketValue = Buckets[BucketIndex] is calculated.
+  //    BucketValue will be -1 if there are no exported symbols such that
+  //      hashString(symbol.name) % NumBuckets = BucketIndex.
+  //    BucketValue will be an index into the HashChains array if there is at
+  //      least one symbol where hashString(symbol.name) % NumBuckets =
+  //      BucketIndex.
+  // 4) If BucketValue != -1, then BucketValue corresponds with an index to the
+  //    start of a chain, identified as "ChainIndex".
+  // 5) ChainIndex has a double meaning.
+  //    Firstly, ChainIndex itself is an index into "ExportNames" (taking
+  //      advantage of the sorting requirement stated earlier).
+  //    Secondly, ChainValue = HashChains[ChainIndex] can be calculated.
+  //    ChainValue also has a double meaning:
+  //      The bottom bit (ChainValue & 1):
+  //        This bit indicates if ExportNames[ChainIndex] is the last symbol
+  //        with a name such that:
+  //        BucketIndex == hashString(ExportNames[ChainIndex]) % NumBuckets
+  //        In other words, this bit is 1 if ChainIndex is the end of a chain.
+  //      The top 31 bits (ChainValue & ~1):
+  //        The top 31 bits of ChainValue cache the hash of the corresonding
+  //        symbol in export names:
+  //        ChainValue = hashString(ExportNames[ChainIndex]) & ~1
+  //        This hash can be used to quickly compare with "H".
+  // 6) For each entry in the chain, (ChainValue & ~1) can be compared with
+  //    (H & ~1) to quickly identify if "Str" matches the corresponding symbol
+  //    at ExportNames[ChainIndex]. If the hashes match, the full strings are
+  //    compared. If they do not, ChainIndex is incremented, and step (6) is
+  //    repeated (unless the ChainIndex is the end of a chain, indicated by
+  //    ChainValue & 1).
+  //
+  // TODO(smklein): Add a bloom filter for quick negative symbol lookups.
+
+  const size_t NumChainEntries = ExportedSymbolTableVector.size();
+  const size_t AverageChainLength = 4;
+  const size_t NumBuckets = (NumChainEntries + AverageChainLength - 1)
+      / AverageChainLength;
+
+  // The SymbolTable must be sorted by hash(symbol name) % number of buckets
+  // to allow quick access from the hash table.
+  // Sort the table (as a vector), and then iterate through the symbols, adding
+  // their names and values to the appropriate variable in the PSLRoot.
+  auto sortStringTable = [&](const SymbolTableEntry &A,
+                             const SymbolTableEntry &B) {
+    return (A.Hash % NumBuckets) <
+           (B.Hash % NumBuckets);
+  };
+
+  std::sort(ExportedSymbolTableVector.begin(), ExportedSymbolTableVector.end(),
+            sortStringTable);
+
+  SmallVector<uint32_t, 32> HashBuckets;
+  HashBuckets.assign(NumBuckets, -1);
+
+  SmallVector<uint32_t, 32> HashChains;
+  HashChains.reserve(ExportPtrs.size());
+
+  uint32_t PrevBucketNum = -1;
+  for (size_t Index = 0; Index < ExportedSymbolTableVector.size(); ++Index) {
+    const SymbolTableEntry *Element = &ExportedSymbolTableVector[Index];
+    const uint32_t HashValue = Element->Hash;
+
+    // The bottom bit of the chain value is reserved to identify if the element
+    // is the "end of the chain" for the given (hash(name) % numbuckets) entry.
+    uint32_t ChainValue = HashValue & ~1;
+    // The final entry in the chain list should be marked as "end of chain".
+    if (Index == ExportedSymbolTableVector.size() - 1)
+      ChainValue |= 1;
+    HashChains.push_back(ChainValue);
+
+    uint32_t BucketNum = HashValue % NumBuckets;
+    if (PrevBucketNum != BucketNum) {
+      // We are starting a new hash chain.
+      if (Index != 0) {
+        // Mark the end of the previous hash chain.
+        HashChains[Index - 1] |= 1;
+      }
+      // Record a pointer to the start of the new hash chain.
+      HashBuckets[BucketNum] = Index;
+      PrevBucketNum = BucketNum;
+    }
+
+    createSymbol(&ExportNames, &ExportPtrs, Element->Value->getName(),
+                 Element->Value);
+  }
+
+  // This lets us remove the "NumChainEntries" field from the PsoRoot.
+  assert(NumChainEntries == ExportPtrs.size() && "Malformed export hash table");
+
+  // Set up an array as a Global Variable, given a SmallVector.
   auto createArray = [&](const char *Name,
                          SmallVectorImpl<Constant *> *Array,
                          Type *ElementType) -> Constant * {
     Constant *Contents = ConstantArray::get(
         ArrayType::get(ElementType, Array->size()), *Array);
+    return new GlobalVariable(
+        M, Contents->getType(), true, GlobalValue::InternalLinkage,
+        Contents, Name);
+  };
+
+  auto createDataArray = [&](const char *Name,
+                             SmallVectorImpl<uint32_t> *Array) {
+    Constant *Contents = ConstantDataArray::get(C, *Array);
     return new GlobalVariable(
         M, Contents->getType(), true, GlobalValue::InternalLinkage,
         Contents, Name);
@@ -360,6 +498,11 @@ bool ConvertToPSO::runOnModule(Module &M) {
     createArray("import_ptrs", &ImportPtrs, PtrType),
     createArray("import_names", &ImportNames, IntPtrType),
     ConstantInt::get(IntPtrType, ImportPtrs.size()),
+
+    // Hash Table (for quick string lookup of exports)
+    ConstantInt::get(IntPtrType, NumBuckets),
+    createDataArray("hash_buckets", &HashBuckets),
+    createDataArray("hash_chains", &HashChains),
   };
   Constant *PsoRootConst = ConstantStruct::getAnon(PsoRoot);
   new GlobalVariable(
