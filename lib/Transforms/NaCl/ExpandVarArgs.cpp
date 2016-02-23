@@ -46,22 +46,7 @@ INITIALIZE_PASS(ExpandVarArgs, "expand-varargs",
                 "Expand out variable argument function definitions and calls",
                 false, false)
 
-static bool isEmscriptenJSArgsFunc(Module *M, StringRef Name) {
-  // TODO(jfb) Make these intrinsics in clang and remove the assert: these
-  //           intrinsics should only exist for Emscripten.
-  bool isEmscriptenSpecial = Name.equals("emscripten_asm_const_int") ||
-                             Name.equals("emscripten_asm_const_double") ||
-                             Name.equals("emscripten_landingpad") ||
-                             Name.equals("emscripten_resume");
-  assert(isEmscriptenSpecial ? Triple(M->getTargetTriple()).isOSEmscripten()
-                             : true);
-  return isEmscriptenSpecial;
-}
-
 static bool ExpandVarArgFunc(Module *M, Function *Func) {
-  if (isEmscriptenJSArgsFunc(M, Func->getName()))
-    return false;
-
   Type *PtrType = Type::getInt8PtrTy(Func->getContext());
 
   FunctionType *FTy = Func->getFunctionType();
@@ -169,9 +154,6 @@ static bool ExpandVarArgCall(Module *M, InstType *Call, DataLayout *DL) {
       Call->getCalledValue()->getType()->getPointerElementType());
   if (!FuncType->isFunctionVarArg())
     return false;
-  if (auto *F = dyn_cast<Function>(Call->getCalledValue()))
-    if (isEmscriptenJSArgsFunc(M, F->getName()))
-      return false;
 
   Function *F = Call->getParent()->getParent();
   LLVMContext &Ctx = M->getContext();

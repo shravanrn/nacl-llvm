@@ -75,7 +75,6 @@ public:
     nvptx64,    // NVPTX: 64-bit
     le32,       // le32: generic little-endian 32-bit CPU (PNaCl / Emscripten)
     le64,       // le64: generic little-endian 64-bit CPU (PNaCl / Emscripten)
-    asmjs,      // asm.js JavaScript subset @LOCALMOD Emscripten
     amdil,      // AMDIL
     amdil64,    // AMDIL with 64-bit pointers
     hsail,      // AMD HSAIL
@@ -139,7 +138,6 @@ public:
     Haiku,
     Minix,
     RTEMS,
-    Emscripten, // Emscripten JavaScript runtime @LOCALMOD Emscripten
     NaCl,       // Native Client
     CNK,        // BG/P Compute-Node Kernel
     Bitrig,
@@ -403,7 +401,6 @@ public:
   bool isOSMSVCRT() const { return false; }
   bool isOSWindows() const { return false; }
   bool isOSNaCl() const { return getOS() == Triple::NaCl; }
-  bool isOSEmscripten() const { return false; }
   bool isOSLinux() const { return getOS() == Triple::Linux; }
   bool isOSBinFormatELF() const { return true; }
   bool isOSBinFormatCOFF() const { return false; }
@@ -429,7 +426,6 @@ public:
   bool isOSMSVCRT() const { return false; }
   bool isOSWindows() const { return false; }
   bool isOSNaCl() const { return false; }
-  bool isOSEmscripten() const { return true; }
   bool isOSLinux() const { return false; }
   bool isOSBinFormatELF() const { return true; }
   bool isOSBinFormatCOFF() const { return false; }
@@ -517,13 +513,6 @@ public:
   bool isOSNaCl() const {
     return getOS() == Triple::NaCl;
   }
-
-  // @LOCALMOD-START Emscripten
-  /// \brief Tests whether the OS is Emscripten.
-  bool isOSEmscripten() const {
-    return getOS() == Triple::Emscripten;
-  }
-  // @LOCALMOD-END Emscripten
 
   /// \brief Tests whether the OS is Linux.
   bool isOSLinux() const {

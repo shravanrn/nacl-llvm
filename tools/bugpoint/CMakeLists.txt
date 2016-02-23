@@ -14,7 +14,6 @@ set(LLVM_LINK_COMPONENTS
   NaClAnalysis
   NaClBitReader
   NaClTransforms
-  JSBackend
   # @LOCALMOD-END
   ObjCARCOpts
   ScalarOpts

@@ -351,14 +351,6 @@ void initializeStripModuleFlagsPass(PassRegistry&);
 void initializeStripDanglingDISubprogramsPass(PassRegistry&);
 void initializeStripTlsPass(PassRegistry&);
 void initializeSubstituteUndefsPass(PassRegistry&);
-// Emscripten passes:
-void initializeExpandI64Pass(PassRegistry&);
-void initializeExpandInsertExtractElementPass(PassRegistry&);
-void initializeLowerEmAsyncifyPass(PassRegistry&);
-void initializeLowerEmExceptionsPass(PassRegistry&);
-void initializeLowerEmSetjmpPass(PassRegistry&);
-void initializeNoExitRuntimePass(PassRegistry&);
-// Emscripten passes end.
 // @LOCALMOD-END
 }
 

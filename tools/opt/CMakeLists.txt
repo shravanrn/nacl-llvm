@@ -13,7 +13,6 @@ set(LLVM_LINK_COMPONENTS
   NaClBitReader
   NaClTransforms
   MinSFITransforms
-  JSBackend
   # @LOCALMOD-END
   InstCombine
   Instrumentation

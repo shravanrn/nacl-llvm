@@ -69,15 +69,6 @@ ModulePass *createStripMetadataPass();
 ModulePass *createStripModuleFlagsPass();
 ModulePass *createStripDanglingDISubprogramsPass();
 
-// Emscripten passes:
-FunctionPass *createExpandInsertExtractElementPass();
-ModulePass *createExpandI64Pass();
-ModulePass *createLowerEmAsyncifyPass();
-ModulePass *createLowerEmExceptionsPass();
-ModulePass *createLowerEmSetjmpPass();
-ModulePass *createNoExitRuntimePass();
-// Emscripten passes end.
-
 void PNaClABISimplifyAddPreOptPasses(Triple *T, PassManagerBase &PM);
 void PNaClABISimplifyAddPostOptPasses(Triple *T, PassManagerBase &PM);
 

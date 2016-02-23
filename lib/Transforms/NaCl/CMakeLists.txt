@@ -42,14 +42,6 @@ add_llvm_library(LLVMNaClTransforms
   SimplifyStructRegSignatures.cpp
   StripAttributes.cpp
   StripMetadata.cpp
-  # Emscripten files:
-  ExpandI64.cpp
-  ExpandInsertExtractElement.cpp
-  LowerEmAsyncify.cpp
-  LowerEmExceptionsPass.cpp
-  LowerEmSetjmp.cpp
-  NoExitRuntime.cpp
-  # Emscripten files end.
   )
 
 add_dependencies(LLVMNaClTransforms intrinsics_gen)

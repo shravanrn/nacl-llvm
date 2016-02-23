@@ -166,13 +166,12 @@ private:
   ConstantCallResolver &operator=(const ConstantCallResolver &) = delete;
 };
 
-/// Resolve __nacl_atomic_is_lock_free to true/false at translation
-/// time. PNaCl's currently supported platforms all support lock-free atomics at
-/// byte sizes {1,2,4,8} except for MIPS and asmjs architectures that supports
-/// lock-free atomics at byte sizes {1,2,4}, and the alignment of the pointer is
-/// always expected to be natural (as guaranteed by C11 and C++11). PNaCl's
-/// Module-level ABI verification checks that the byte size is constant and in
-/// {1,2,4,8}.
+/// Resolve __nacl_atomic_is_lock_free to true/false at translation / time.
+//PNaCl's currently supported platforms all support lock-free atomics at / byte
+//sizes {1,2,4,8} except for MIPS architecture that supports / lock-free atomics
+//at byte sizes {1,2,4}, and the alignment of the pointer is / always expected
+//to be natural (as guaranteed by C11 and C++11). PNaCl's / Module-level ABI
+//verification checks that the byte size is constant and in / {1,2,4,8}.
 struct IsLockFreeToConstant {
   Constant *operator()(CallInst *Call) {
     uint64_t MaxLockFreeByteSize = 8;
@@ -199,7 +198,6 @@ struct IsLockFreeToConstant {
     case Triple::arm:
       break;
     case Triple::mipsel:
-    case Triple::asmjs:
       MaxLockFreeByteSize = 4;
       break;
     default:
