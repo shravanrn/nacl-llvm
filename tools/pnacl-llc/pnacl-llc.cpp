@@ -389,7 +389,7 @@ static std::unique_ptr<Module> parseBitcodeRecordsAsText(
     return nullptr;
   }
   std::unique_ptr<Module> Mptr(M.get());
-  return std::move(Mptr);
+  return Mptr;
 }
 #endif
 
@@ -449,7 +449,7 @@ static std::unique_ptr<Module> getModule(
     return nullptr;
 #endif
   }
-  return std::move(M);
+  return M;
 }
 
 static cl::opt<bool>
