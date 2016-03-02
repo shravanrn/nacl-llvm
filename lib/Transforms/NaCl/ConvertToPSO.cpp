@@ -291,6 +291,9 @@ bool ConvertToPSO::runOnModule(Module &M) {
       }
 
       if (Modified) {
+        // This global variable will need to be relocated at runtime, so it
+        // should not be in read-only memory.
+        Var.setConstant(false);
         // Note that the resulting initializer will not follow
         // FlattenGlobals' normal form, because it will contain i32s rather
         // than i8 arrays.  However, the later pass of FlattenGlobals will
@@ -302,6 +305,9 @@ bool ConvertToPSO::runOnModule(Module &M) {
       uint64_t Addend;
       if (auto GV = getReference(Init, &Addend)) {
         createSymbol(&ImportNames, &ImportPtrs, GV->getName(), &Var);
+        // This global variable will need to be relocated at runtime, so it
+        // should not be in read-only memory.
+        Var.setConstant(false);
         // Replace the original reference with the addend value.
         Var.setInitializer(ConstantInt::get(Init->getType(), Addend));
       }

@@ -38,6 +38,10 @@ define i8* @my_read_tp() {
 @reloc_var = global i32* @imported_var
 ; CHECK: @reloc_var = internal global [4 x i8] zeroinitializer
 
+; Test that a constant import becomes a non-constant.
+@reloc_var_const = constant i32* @imported_var
+; CHECK: @reloc_var_const = internal global [4 x i8] zeroinitializer
+
 ; Test a non-zero addend.
 @reloc_var_addend = global i32* getelementptr (i32, i32* @imported_var, i32 1)
 ; CHECK: @reloc_var_addend = internal global [4 x i8] c"\04\00\00\00"
@@ -49,6 +53,14 @@ define i8* @my_read_tp() {
     i32* getelementptr (i32, i32* @imported_var3, i32 2),
     i32* inttoptr (i32 255 to i32*)]
 ; CHECK: @reloc_var_offset = internal global [16 x i8] c"\00\00\00\00\04\00\00\00\08\00\00\00\FF\00\00\00"
+
+; Test that a constant compound initializer becomes a non-constant.
+@reloc_var_const_offset = constant [4 x i32*] [
+    i32* null,
+    i32* getelementptr (i32, i32* @imported_var2, i32 1),
+    i32* getelementptr (i32, i32* @imported_var3, i32 2),
+    i32* inttoptr (i32 255 to i32*)]
+; CHECK: @reloc_var_const_offset = internal global [16 x i8] c"\00\00\00\00\04\00\00\00\08\00\00\00\FF\00\00\00"
 
 ; References to module-local variables should not be modified.
 @local_var = internal global i32 0
