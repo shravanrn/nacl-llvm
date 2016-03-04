@@ -122,21 +122,18 @@ static StructType *buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
   std::vector<Constant*> FieldInitValues;
   PassState State(&M);
 
-  for (Module::global_iterator GV = M.global_begin();
-       GV != M.global_end();
-       ++GV) {
-    if (GV->isThreadLocal()) {
-      if (!GV->hasInitializer()) {
+  for (GlobalVariable &GV : M.globals()) {
+    if (GV.isThreadLocal()) {
+      if (!GV.hasInitializer()) {
         // Since this is a whole-program transformation, "extern" TLS
         // variables are not allowed at this point.
         report_fatal_error(std::string("TLS variable without an initializer: ")
-                           + GV->getName());
+                           + GV.getName());
       }
-      if (!GV->getInitializer()->isNullValue()) {
-        addVarToTlsTemplate(&State, &FieldInitTypes,
-                            &FieldInitValues, GV);
+      if (!GV.getInitializer()->isNullValue()) {
+        addVarToTlsTemplate(&State, &FieldInitTypes, &FieldInitValues, &GV);
         VarInfo Info;
-        Info.TlsVar = GV;
+        Info.TlsVar = &GV;
         Info.IsBss = false;
         Info.TemplateIndex = FieldInitTypes.size() - 1;
         TlsVars->push_back(Info);
@@ -145,13 +142,11 @@ static StructType *buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
   }
   // Handle zero-initialized TLS variables in a second pass, because
   // these should follow non-zero-initialized TLS variables.
-  for (Module::global_iterator GV = M.global_begin();
-       GV != M.global_end();
-       ++GV) {
-    if (GV->isThreadLocal() && GV->getInitializer()->isNullValue()) {
-      addVarToTlsTemplate(&State, &FieldBssTypes, NULL, GV);
+  for (GlobalVariable &GV : M.globals()) {
+    if (GV.isThreadLocal() && GV.getInitializer()->isNullValue()) {
+      addVarToTlsTemplate(&State, &FieldBssTypes, NULL, &GV);
       VarInfo Info;
-      Info.TlsVar = GV;
+      Info.TlsVar = &GV;
       Info.IsBss = true;
       Info.TemplateIndex = FieldBssTypes.size() - 1;
       TlsVars->push_back(Info);
@@ -231,11 +226,9 @@ static void rewriteTlsVars(Module &M, std::vector<VarInfo> *TlsVars,
   // Set up the intrinsic that reads the thread pointer.
   Function *ReadTpFunc = Intrinsic::getDeclaration(&M, Intrinsic::nacl_read_tp);
 
-  for (std::vector<VarInfo>::iterator VarInfo = TlsVars->begin();
-       VarInfo != TlsVars->end();
-       ++VarInfo) {
-    GlobalVariable *Var = VarInfo->TlsVar;
-    while (Var->hasNUsesOrMore(1)) {
+  for (VarInfo &VarInfo : *TlsVars) {
+    GlobalVariable *Var = VarInfo.TlsVar;
+    while (!Var->use_empty()) {
       Use *U = &*Var->use_begin();
       Instruction *InsertPt = PhiSafeInsertPt(U);
       Value *RawThreadPtr = CallInst::Create(ReadTpFunc, "tls_raw", InsertPt);
@@ -253,14 +246,14 @@ static void rewriteTlsVars(Module &M, std::vector<VarInfo> *TlsVars,
       Indexes.push_back(ConstantInt::get(
           M.getContext(), APInt(32, -1)));
       Indexes.push_back(ConstantInt::get(
-          M.getContext(), APInt(32, VarInfo->IsBss ? 1 : 0)));
+          M.getContext(), APInt(32, VarInfo.IsBss ? 1 : 0)));
       Indexes.push_back(ConstantInt::get(
-          M.getContext(), APInt(32, VarInfo->TemplateIndex)));
+          M.getContext(), APInt(32, VarInfo.TemplateIndex)));
       Value *TlsField = GetElementPtrInst::Create(
           TemplateType, TypedThreadPtr, Indexes, "field", InsertPt);
       PhiSafeReplaceUses(U, TlsField);
     }
-    VarInfo->TlsVar->eraseFromParent();
+    Var->eraseFromParent();
   }
 }
 
