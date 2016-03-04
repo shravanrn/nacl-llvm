@@ -40,6 +40,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/NaCl.h"
 
@@ -423,8 +424,6 @@ bool ConvertToPSO::runOnModule(Module &M) {
   //    compared. If they do not, ChainIndex is incremented, and step (6) is
   //    repeated (unless the ChainIndex is the end of a chain, indicated by
   //    ChainValue & 1).
-  //
-  // TODO(smklein): Add a bloom filter for quick negative symbol lookups.
 
   const size_t NumChainEntries = ExportedSymbolTableVector.size();
   const size_t AverageChainLength = 4;
@@ -450,10 +449,69 @@ bool ConvertToPSO::runOnModule(Module &M) {
   SmallVector<uint32_t, 32> HashChains;
   HashChains.reserve(ExportPtrs.size());
 
+  // A bloom filter is used to quickly reject queries for exported symbols which
+  // do not exist within a module.
+  //
+  // The bloom filter is composed of |MaskWords| number of words, each 32 bits
+  // wide.
+  //
+  // It uses k=2, or "two independent hash functions for each symbol". This
+  // means that two separate hashes, |H1| and |H2| are calculated. Each of these
+  // hashes corresponds to a single MaskWord and MaskBit pair. This lets a
+  // single bit of the bloom filter be turned on based on the inclusion of a
+  // hash.
+  //
+  // These hashes are calculated as follows:
+  //    H1 = Hash(name);
+  //    H2 = H1 >> Shift2;
+  //
+  // Where Shift2 is the number of right-shifts to generate H2 (from H1).
+  //
+  // Inspired by the GNU hash section, the bloom filter's performance improves
+  // when a single MaskWord is used for the pair of hashes, rather than two
+  // separate MaskWords.
+  //
+  //    MaskWord = (H1 / 32) % MaskWords;
+  //    Bitmask = (1 << (H1 % 32)) | (1 << (H2 % 32));
+  //
+  // As a bit-fiddling trick, |MaskWords| must be a power of 2.
+  // This lets us avoid the modulus operation when calculating MaskWord:
+  //    MaskWord = (H1 / 32) & (MaskWords - 1);
+
+  size_t ExportSymCount = ExportedSymbolTableVector.size();
+  size_t MaskBitsLog2 = Log2_32(ExportSymCount) + 1;
+  const int Log2BitsPerWord = 5;
+
+  // This heuristic for calculating Shift2 and MaskWords matches the heuristic
+  // used in both BFD ld and gold.
+  if (MaskBitsLog2 < 3)
+    MaskBitsLog2 = Log2BitsPerWord;
+  else if ((1 << (MaskBitsLog2 - 2)) & ExportSymCount)
+    // If the number of exported symbols is almost high enough to trigger an
+    // increased value of "MaskBitsLog2", then add one anyway, to decrease the
+    // likeliness of hash collisions. For example, for values of ExportSymCount
+    // in the range of 32 to 47, the conditional will evaluate to "false". For
+    // the range 48 to 63, it will evaluate to "true".
+    MaskBitsLog2 += 3;
+  else
+    MaskBitsLog2 += 2;
+
+  const size_t Shift2 = MaskBitsLog2;
+  assert(Shift2 >= Log2BitsPerWord);
+  const size_t MaskWords = 1U << (Shift2 - Log2BitsPerWord);
+  SmallVector<uint32_t, 32> BloomFilter;
+  BloomFilter.assign(MaskWords, 0);
+
   uint32_t PrevBucketNum = -1;
   for (size_t Index = 0; Index < ExportedSymbolTableVector.size(); ++Index) {
     const SymbolTableEntry *Element = &ExportedSymbolTableVector[Index];
     const uint32_t HashValue = Element->Hash;
+
+    // Update bloom filter.
+    const uint32_t HashValue2 = Element->Hash >> Shift2;
+    uint32_t WordNum = (HashValue / 32) % MaskWords;
+    uint32_t Bitmask = (1 << (HashValue % 32)) | (1 << (HashValue2 % 32));
+    BloomFilter[WordNum] |= Bitmask;
 
     // The bottom bit of the chain value is reserved to identify if the element
     // is the "end of the chain" for the given (hash(name) % numbuckets) entry.
@@ -509,6 +567,11 @@ bool ConvertToPSO::runOnModule(Module &M) {
     ConstantInt::get(IntPtrType, NumBuckets),
     createDataArray(M, "hash_buckets", &HashBuckets),
     createDataArray(M, "hash_chains", &HashChains),
+
+    // Bloom Filter (for quick string lookup rejection of exports)
+    ConstantInt::get(IntPtrType, MaskWords - 1),
+    ConstantInt::get(IntPtrType, Shift2),
+    createDataArray(M, "bloom_filter", &BloomFilter),
   };
   Constant *PsoRootConst = ConstantStruct::getAnon(PsoRoot);
   new GlobalVariable(
