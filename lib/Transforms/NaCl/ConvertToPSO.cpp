@@ -114,6 +114,25 @@ namespace {
     report_fatal_error("ConvertToPSO: Value is not a SimpleElement");
   }
 
+  // Set up an array as a Global Variable, given a SmallVector.
+  Constant *createArray(Module &M, const char *Name,
+                        SmallVectorImpl<Constant *> *Array,
+                        Type *ElementType) {
+    Constant *Contents = ConstantArray::get(
+        ArrayType::get(ElementType, Array->size()), *Array);
+    return new GlobalVariable(
+        M, Contents->getType(), true, GlobalValue::InternalLinkage,
+        Contents, Name);
+  }
+
+  Constant *createDataArray(Module &M, const char *Name,
+                            SmallVectorImpl<uint32_t> *Array) {
+    Constant *Contents = ConstantDataArray::get(M.getContext(), *Array);
+    return new GlobalVariable(
+        M, Contents->getType(), true, GlobalValue::InternalLinkage,
+        Contents, Name);
+  }
+
   // This function adds a level of indirection to references by functions
   // to imported GlobalValues.  Any time a function refers to a symbol that
   // is defined outside the module, we modify the function to read the
@@ -463,25 +482,6 @@ bool ConvertToPSO::runOnModule(Module &M) {
   // This lets us remove the "NumChainEntries" field from the PsoRoot.
   assert(NumChainEntries == ExportPtrs.size() && "Malformed export hash table");
 
-  // Set up an array as a Global Variable, given a SmallVector.
-  auto createArray = [&](const char *Name,
-                         SmallVectorImpl<Constant *> *Array,
-                         Type *ElementType) -> Constant * {
-    Constant *Contents = ConstantArray::get(
-        ArrayType::get(ElementType, Array->size()), *Array);
-    return new GlobalVariable(
-        M, Contents->getType(), true, GlobalValue::InternalLinkage,
-        Contents, Name);
-  };
-
-  auto createDataArray = [&](const char *Name,
-                             SmallVectorImpl<uint32_t> *Array) {
-    Constant *Contents = ConstantDataArray::get(C, *Array);
-    return new GlobalVariable(
-        M, Contents->getType(), true, GlobalValue::InternalLinkage,
-        Contents, Name);
-  };
-
   // Set up string of exported names.
   Constant *StringTableArray = ConstantDataArray::getString(
       C, StringRef(StringTable.data(), StringTable.size()), false);
@@ -496,19 +496,19 @@ bool ConvertToPSO::runOnModule(Module &M) {
     StringTableVar,
 
     // Exports
-    createArray("export_ptrs", &ExportPtrs, PtrType),
-    createArray("export_names", &ExportNames, IntPtrType),
+    createArray(M, "export_ptrs", &ExportPtrs, PtrType),
+    createArray(M, "export_names", &ExportNames, IntPtrType),
     ConstantInt::get(IntPtrType, ExportPtrs.size()),
 
     // Imports
-    createArray("import_ptrs", &ImportPtrs, PtrType),
-    createArray("import_names", &ImportNames, IntPtrType),
+    createArray(M, "import_ptrs", &ImportPtrs, PtrType),
+    createArray(M, "import_names", &ImportNames, IntPtrType),
     ConstantInt::get(IntPtrType, ImportPtrs.size()),
 
     // Hash Table (for quick string lookup of exports)
     ConstantInt::get(IntPtrType, NumBuckets),
-    createDataArray("hash_buckets", &HashBuckets),
-    createDataArray("hash_chains", &HashChains),
+    createDataArray(M, "hash_buckets", &HashBuckets),
+    createDataArray(M, "hash_chains", &HashChains),
   };
   Constant *PsoRootConst = ConstantStruct::getAnon(PsoRoot);
   new GlobalVariable(
