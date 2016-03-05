@@ -20,6 +20,27 @@
 // a template for initializing TLS variables' values for each thread.
 // This is a task normally performed by the linker in ELF systems.
 //
+// Layout:
+//
+// This currently uses an x86-style layout where the TLS variables are
+// placed at addresses below the thread pointer (i.e. with negative offsets
+// from the thread pointer).  See
+// native_client/src/untrusted/nacl/tls_params.h for an explanation of
+// different architectures' TLS layouts.
+//
+// This x86-style layout is *not* required for normal ABI-stable pexes.
+//
+// However, the x86-style layout is currently required for Non-SFI pexes
+// that call x86 Linux syscalls directly.  This is a configuration that is
+// only used for testing.
+//
+// Before PNaCl was launched, using x86-style layout used to be required
+// because there was a check in nacl_irt_thread_create() (in
+// irt/irt_thread.c) that required the thread pointer to be a self-pointer
+// on x86-32.  That requirement was removed because it was non-portable
+// (because it could cause a pexe to fail on x86 but not on ARM) -- see
+// https://codereview.chromium.org/11411310.
+//
 //===----------------------------------------------------------------------===//
 
 #include <vector>
@@ -237,12 +258,6 @@ static void rewriteTlsVars(Module &M, std::vector<VarInfo> *TlsVars,
       SmallVector<Value*, 3> Indexes;
       // We use -1 because we use the x86-style TLS layout in which
       // the TLS data is stored at addresses below the thread pointer.
-      // This is largely because a check in nacl_irt_thread_create()
-      // in irt/irt_thread.c requires the thread pointer to be a
-      // self-pointer on x86-32.
-      // TODO(mseaborn): I intend to remove that check because it is
-      // non-portable.  In the mean time, we want PNaCl pexes to work
-      // in older Chromium releases when translated to nexes.
       Indexes.push_back(ConstantInt::get(
           M.getContext(), APInt(32, -1)));
       Indexes.push_back(ConstantInt::get(
