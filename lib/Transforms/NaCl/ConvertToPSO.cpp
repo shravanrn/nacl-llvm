@@ -364,11 +364,13 @@ bool ConvertToPSO::runOnModule(Module &M) {
     GV.setLinkage(GlobalValue::InternalLinkage);
   };
 
-  for (Module::iterator Iter = M.begin(); Iter != M.end(); ) {
+  for (auto Iter = M.begin(); Iter != M.end(); ) {
     processGlobalValue(*Iter++);
   }
-  for (Module::global_iterator Iter = M.global_begin();
-       Iter != M.global_end(); ) {
+  for (auto Iter = M.global_begin(); Iter != M.global_end(); ) {
+    processGlobalValue(*Iter++);
+  }
+  for (auto Iter = M.alias_begin(); Iter != M.alias_end(); ) {
     processGlobalValue(*Iter++);
   }
 
@@ -577,6 +579,11 @@ bool ConvertToPSO::runOnModule(Module &M) {
   new GlobalVariable(
       M, PsoRootConst->getType(), true, GlobalValue::ExternalLinkage,
       PsoRootConst, "__pnacl_pso_root");
+
+  // As soon as we have finished exporting aliases, we can resolve them.
+  ModulePass *AliasPass = createResolveAliasesPass();
+  AliasPass->runOnModule(M);
+  delete AliasPass;
 
   return true;
 }

@@ -19,6 +19,11 @@ define i32 @exported_bar() {
 }
 
 
+; Test exporting aliases
+@var1_alias = alias i32* @var1
+@exported_foo_alias = alias i32 ()* @exported_foo
+
+
 ; Test references to intrinsics.
 declare i8* @llvm.nacl.read.tp()
 
