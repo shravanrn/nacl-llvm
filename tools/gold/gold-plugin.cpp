@@ -17,17 +17,21 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/Bitcode/NaCl/NaClBitcodeWriterPass.h" // @LOCALMOD
+#include "llvm/Bitcode/NaCl/NaClReaderWriter.h" // @LOCALMOD
 #include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/CommandFlags.h"
 #include "llvm/IR/AutoUpgrade.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DebugInfo.h" // @LOCALMOD
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/InitializePasses.h" // @LOCALMOD
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Object/IRObjectFile.h"
@@ -39,6 +43,8 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/Transforms/NaCl.h" // @LOCALMOD
+#include "llvm/Transforms/MinSFI.h" // @LOCALMOD
 #include "llvm/Transforms/Utils/GlobalStatus.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
@@ -77,6 +83,9 @@ static ld_plugin_set_extra_library_path set_extra_library_path = nullptr;
 static ld_plugin_get_view get_view = nullptr;
 static ld_plugin_message message = discard_message;
 static Reloc::Model RelocationModel = Reloc::Default;
+// @LOCALMOD-BEGIN
+static bool Relocatable = false;
+// @LOCALMOD-END
 static std::string output_name = "";
 static std::list<claimed_file> Modules;
 static std::vector<std::string> Cleanup;
@@ -100,6 +109,11 @@ namespace options {
   static bool generate_api_file = false;
   static OutputType TheOutputType = OT_NORMAL;
   static unsigned OptLevel = 2;
+  // @LOCALMOD-BEGIN
+  static bool ABISimplify = true;
+  static bool Finalize = true;
+  static bool MinSFI = false;
+  // @LOCALMOD-END
   static std::string obj_path;
   static std::string extra_library_path;
   static std::string triple;
@@ -137,6 +151,18 @@ namespace options {
       if (opt[1] < '0' || opt[1] > '3')
         report_fatal_error("Optimization level must be between 0 and 3");
       OptLevel = opt[1] - '0';
+      // @LOCALMOD-BEGIN
+    } else if (opt == "abi-simplify") {
+      ABISimplify = true;
+    } else if (opt == "no-abi-simplify") {
+      ABISimplify = false;
+    } else if (opt == "finalize") {
+      Finalize = true;
+    } else if (opt == "no-finalize") {
+      Finalize = false;
+    } else if (opt == "minsfi") {
+      MinSFI = true;
+      // @LOCALMOD-END
     } else {
       // Save this option to pass to the code generator.
       // ParseCommandLineOptions() expects argv[0] to be program name. Lazily
@@ -179,6 +205,9 @@ ld_plugin_status onload(ld_plugin_tv *tv) {
       case LDPT_LINKER_OUTPUT:
         switch (tv->tv_u.tv_val) {
           case LDPO_REL:  // .o
+            // @LOCALMOD-BEGIN
+            Relocatable = true;
+            // @LOCALMOD-END
           case LDPO_DYN:  // .so
           case LDPO_PIE:  // position independent executable
             RelocationModel = Reloc::PIC_;
@@ -276,6 +305,17 @@ ld_plugin_status onload(ld_plugin_tv *tv) {
     message(LDPL_ERROR, "relesase_input_file not passed to LLVMgold.");
     return LDPS_ERR;
   }
+
+  // @LOCALMOD-BEGIN
+  if (options::Finalize && !options::ABISimplify) {
+    message(LDPL_FATAL, "Finalization requires ABI simplification.");
+    return LDPS_ERR;
+  }
+  if (options::MinSFI && !options::ABISimplify) {
+    message(LDPL_FATAL, "MinSFI requires ABI simplification.");
+    return LDPS_ERR;
+  }
+  // @LOCALMOD-END
 
   return LDPS_OK;
 }
@@ -750,11 +790,54 @@ static void runLTOPasses(Module &M, TargetMachine &TM) {
   passes.run(M);
 }
 
+// @LOCALMOD-BEGIN
+static void runSimplificationPasses(Module &M, Triple &TheTriple) {
+  legacy::PassManager Passes;
+
+  TargetLibraryInfoImpl TLII(TheTriple);
+  TLII.disableAllFunctions();
+  Passes.add(new TargetLibraryInfoWrapperPass());
+
+  PNaClABISimplifyAddPreOptPasses(&TheTriple, Passes);
+  PNaClABISimplifyAddPostOptPasses(&TheTriple, Passes);
+
+  if (options::MinSFI)
+    MinSFIPasses(Passes);
+
+  if (options::Finalize) {
+    Passes.add(createStripSymbolsPass());
+    Passes.add(createStripMetadataPass());
+    Passes.add(createStripModuleFlagsPass());
+  }
+
+  Passes.add(createVerifierPass());
+
+  Passes.run(M);
+}
+// @LOCALMOD-END
+
 static void saveBCFile(StringRef Path, Module &M) {
   std::error_code EC;
   raw_fd_ostream OS(Path, EC, sys::fs::OpenFlags::F_None);
   if (EC)
     message(LDPL_FATAL, "Failed to write the output file.");
+// @LOCALMOD-BEGIN
+  const std::string &TripleStr = M.getTargetTriple();
+  Triple TheTriple(TripleStr);
+  if (!Relocatable && (TheTriple.getArch() == Triple::le32 &&
+                       TheTriple.getOS() == Triple::NaCl)) {
+    if (unsigned NumOpts = options::extra.size())
+      cl::ParseCommandLineOptions(NumOpts, &options::extra[0]);
+
+    if (options::ABISimplify)
+      runSimplificationPasses(M, TheTriple);
+
+    if (options::Finalize)
+      NaClWriteBitcodeToFile(&M, OS, /* AcceptSupportedOnly */ true);
+    else
+      WriteBitcodeToFile(&M, OS, /* ShouldPreserveUseListOrder */ true);
+  } else
+// @LOCALMOD-END
   WriteBitcodeToFile(&M, OS, /* ShouldPreserveUseListOrder */ true);
 }
 

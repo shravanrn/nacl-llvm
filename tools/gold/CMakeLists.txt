@@ -11,7 +11,12 @@ if( LLVM_ENABLE_PIC AND LLVM_BINUTILS_INCDIR )
      ${LLVM_TARGETS_TO_BUILD}
      Linker
      BitWriter
+     Instrumentation
      IPO
+     MinSFITransforms
+     NaClAnalysis
+     NaClBitWriter
+     NaClTransforms
      )
 
   add_llvm_loadable_module(LLVMgold
