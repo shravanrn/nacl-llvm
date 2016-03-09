@@ -65,6 +65,14 @@ namespace {
     uint32_t Offset;
   };
 
+  struct TlsTemplate {
+    std::vector<VarInfo> TlsVars;
+    Constant *Data;
+    uint32_t DataSize;
+    uint32_t TotalSize;
+    uint32_t Alignment;
+  };
+
   class PassState {
   public:
     PassState(Module *M): M(M), DL(M), Offset(0), Alignment(1) {}
@@ -152,7 +160,7 @@ static Constant *makeInitStruct(Module &M, ArrayRef<Constant *> Elements) {
   return ConstantStruct::get(Ty, Elements);
 }
 
-static void buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
+static void buildTlsTemplate(Module &M, TlsTemplate *Result) {
   std::vector<Constant*> FieldInitValues;
   PassState State(&M);
 
@@ -168,11 +176,11 @@ static void buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
         VarInfo Info;
         Info.TlsVar = &GV;
         Info.Offset = addVarToTlsTemplate(&State, &FieldInitValues, &GV);
-        TlsVars->push_back(Info);
+        Result->TlsVars.push_back(Info);
       }
     }
   }
-  uint32_t TemplateDataSize = State.Offset;
+  Result->DataSize = State.Offset;
   // Handle zero-initialized TLS variables in a second pass, because
   // these should follow non-zero-initialized TLS variables.
   for (GlobalVariable &GV : M.globals()) {
@@ -180,9 +188,15 @@ static void buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
       VarInfo Info;
       Info.TlsVar = &GV;
       Info.Offset = addVarToTlsTemplate(&State, NULL, &GV);
-      TlsVars->push_back(Info);
+      Result->TlsVars.push_back(Info);
     }
   }
+  Result->TotalSize = State.Offset;
+  Result->Alignment = State.Alignment;
+  Result->Data = makeInitStruct(M, FieldInitValues);
+}
+
+static void adjustToX86StyleLayout(TlsTemplate *Templ) {
   // Add final alignment padding so that
   //   (struct tls_struct *) __nacl_read_tp() - 1
   // gives the correct, aligned start of the TLS variables given the
@@ -190,13 +204,14 @@ static void buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
   // be memset() to zero at runtime.  This wastage doesn't seem
   // important gives that we're not trying to optimize packing by
   // reordering to put similarly-aligned variables together.
-  padToAlignment(&State, NULL, State.Alignment);
-  uint32_t TemplateTotalSize = State.Offset;
+  Templ->TotalSize = RoundUpToAlignment(Templ->TotalSize, Templ->Alignment);
 
   // Adjust offsets for x86-style layout.
-  for (VarInfo &VarInfo : *TlsVars)
-    VarInfo.Offset -= TemplateTotalSize;
+  for (VarInfo &VarInfo : Templ->TlsVars)
+    VarInfo.Offset -= Templ->TotalSize;
+}
 
+static void resolveTemplateVars(Module &M, TlsTemplate *Templ) {
   // We define the following symbols, which are the same as those
   // defined by NaCl's original customized binutils linker scripts:
   //   __tls_template_start
@@ -206,10 +221,9 @@ static void buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
   // the original linker scripts.
 
   const char *StartSymbol = "__tls_template_start";
-  Constant *TemplateData = makeInitStruct(M, FieldInitValues);
   GlobalVariable *TemplateDataVar =
-      new GlobalVariable(M, TemplateData->getType(), /*isConstant=*/true,
-                         GlobalValue::InternalLinkage, TemplateData);
+      new GlobalVariable(M, Templ->Data->getType(), /*isConstant=*/true,
+                         GlobalValue::InternalLinkage, Templ->Data);
   setGlobalVariableValue(M, StartSymbol, TemplateDataVar);
   TemplateDataVar->setName(StartSymbol);
 
@@ -219,12 +233,12 @@ static void buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
 
   Constant *TdataEnd = ConstantExpr::getGetElementPtr(
       I8, TemplateAsI8,
-      ConstantInt::get(M.getContext(), APInt(32, TemplateDataSize)));
+      ConstantInt::get(M.getContext(), APInt(32, Templ->DataSize)));
   setGlobalVariableValue(M, "__tls_template_tdata_end", TdataEnd);
 
   Constant *TotalEnd = ConstantExpr::getGetElementPtr(
       I8, TemplateAsI8,
-      ConstantInt::get(M.getContext(), APInt(32, TemplateTotalSize)));
+      ConstantInt::get(M.getContext(), APInt(32, Templ->TotalSize)));
   setGlobalVariableValue(M, "__tls_template_end", TotalEnd);
 
   const char *AlignmentSymbol = "__tls_template_alignment";
@@ -232,7 +246,7 @@ static void buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
   GlobalVariable *AlignmentVar = new GlobalVariable(
       M, i32, /*isConstant=*/true,
       GlobalValue::InternalLinkage,
-      ConstantInt::get(M.getContext(), APInt(32, State.Alignment)));
+      ConstantInt::get(M.getContext(), APInt(32, Templ->Alignment)));
   setGlobalVariableValue(M, AlignmentSymbol, AlignmentVar);
   AlignmentVar->setName(AlignmentSymbol);
 }
@@ -319,9 +333,11 @@ bool ExpandTls::runOnModule(Module &M) {
   Pass->runOnModule(M);
   delete Pass;
 
-  std::vector<VarInfo> TlsVars;
-  buildTlsTemplate(M, &TlsVars);
-  rewriteTlsVars(M, &TlsVars);
+  TlsTemplate Templ;
+  buildTlsTemplate(M, &Templ);
+  adjustToX86StyleLayout(&Templ);
+  resolveTemplateVars(M, &Templ);
+  rewriteTlsVars(M, &Templ.TlsVars);
 
   defineTlsLayoutFunctions(M);
 
