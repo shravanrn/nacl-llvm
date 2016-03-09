@@ -5,7 +5,10 @@ target datalayout = "p:32:32:32"
 
 @var = global i32 123
 
-; Put this first to check that the pass handles BSS variables last.
+; We put these zero-initialized (a.k.a. BSS) variables first to check that
+; the ExpandTls pass correctly places them them after non-BSS variables in
+; the TLS template despite their ordering here.
+@bss_tvar1 = thread_local global i8 0
 @bss_tvar_aligned = thread_local global i32 0, align 64
 
 @tvar1 = thread_local global i16 234
@@ -14,29 +17,91 @@ target datalayout = "p:32:32:32"
 @tvar_aligned = thread_local global i8 99, align 32
 
 
-; CHECK: %tls_init_template = type <{ i16, [2 x i8], i32*, [24 x i8], i8 }>
-; CHECK: %tls_struct = type <{ %tls_init_template, %tls_bss_template }>
+; The TLS variables above should be allocated the following offsets:
+;
+;   @tvar1                         offset = 0   tp_offset=-128
+;   [pad 2 bytes to align to 4]
+;   @tvar2                         offset = 4   tp_offset=-124
+;   [pad 24 bytes to align to 32]
+;   @tvar_aligned                  offset = 32  tp_offset=-96
+;   @bss_tvar1                     offset = 33  tp_offset=-95
+;   [pad 30 bytes to align to 64]
+;   @bss_tvar_aligned              offset = 64  tp_offset=-64
+;
+; where "offset" is the variable's offset from the start of the TLS
+; template, while "tp_offset" is the variable's offset from the thread
+; pointer.
+;
+; Our use of x86-style layout gives us:
+;   tp_offset = offset - 128
+; where 128 is the total size of the TLS template.
 
-; This struct type must be "packed" because the 31 byte padding here
-; is followed by an i32.
-; CHECK: %tls_bss_template = type <{ [31 x i8], i32, [60 x i8] }>
+
+; CHECK: %tls_init_template = type <{ i16, [2 x i8], i32*, [24 x i8], i8 }>
+
 
 ; CHECK: @__tls_template_start = internal constant %tls_init_template <{ i16 234, [2 x i8] zeroinitializer, i32* @var, [24 x i8] zeroinitializer, i8 99 }>
 
 ; CHECK: @__tls_template_alignment = internal constant i32 64
 
 
-; Create references to __tls_template_* to keep these live, otherwise
-; the definition of %tls_struct (which we check for above) is removed
-; from the output.
+; Test for use of correct offsets.
 
+define i16* @get_tvar1() {
+  ret i16* @tvar1
+}
+; CHECK: define i16* @get_tvar1()
+; CHECK: %tvar1.i8 = getelementptr i8, i8* %thread_ptr, i32 -128
+
+
+define i32** @get_tvar2() {
+  ret i32** @tvar2
+}
+; CHECK: define i32** @get_tvar2()
+; CHECK: %tvar2.i8 = getelementptr i8, i8* %thread_ptr, i32 -124
+
+
+define i8* @get_tvar_aligned() {
+  ret i8* @tvar_aligned
+}
+; CHECK: define i8* @get_tvar_aligned()
+; CHECK: %tvar_aligned.i8 = getelementptr i8, i8* %thread_ptr, i32 -96
+
+
+define i8* @get_bss_tvar1() {
+  ret i8* @bss_tvar1
+}
+; CHECK: define i8* @get_bss_tvar1()
+; CHECK: %bss_tvar1.i8 = getelementptr i8, i8* %thread_ptr, i32 -95
+
+
+define i32* @get_bss_tvar_aligned() {
+  ret i32* @bss_tvar_aligned
+}
+; CHECK: define i32* @get_bss_tvar_aligned()
+; CHECK: %bss_tvar_aligned.i8 = getelementptr i8, i8* %thread_ptr, i32 -64
+
+
+; Check that we define global variables for TLS templates
+
+@__tls_template_start = external global i8
 @__tls_template_tdata_end = external global i8
 @__tls_template_end = external global i8
+
+define i8* @get_tls_template_start() {
+  ret i8* @__tls_template_start
+}
+; CHECK: define i8* @get_tls_template_start()
+; CHECK: ret i8* bitcast (%tls_init_template* @__tls_template_start to i8*)
 
 define i8* @get_tls_template_tdata_end() {
   ret i8* @__tls_template_tdata_end
 }
+; CHECK: define i8* @get_tls_template_tdata_end()
+; CHECK: ret i8* getelementptr (i8, i8* bitcast (%tls_init_template* @__tls_template_start to i8*), i32 33)
 
 define i8* @get_tls_template_end() {
   ret i8* @__tls_template_end
 }
+; CHECK: define i8* @get_tls_template_end()
+; CHECK: ret i8* getelementptr (i8, i8* bitcast (%tls_init_template* @__tls_template_start to i8*), i32 128)

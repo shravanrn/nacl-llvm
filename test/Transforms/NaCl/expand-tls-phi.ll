@@ -18,10 +18,11 @@ return:
 ; which might be suboptimal but works in all cases.
 ; CHECK: define i32* @get_tvar(i1 %cmp) {
 ; CHECK: entry:
-; CHECK: %field = getelementptr %tls_struct, %tls_struct* %tls_struct, i32 -1, i32 0, i32 0
+; CHECK: %tvar.i8 = getelementptr i8, i8* %thread_ptr, i32 -4
+; CHECK: %tvar = bitcast i8* %tvar.i8 to i32*
 ; CHECK: else:
 ; CHECK: return:
-; CHECK: %result = phi i32* [ %field, %entry ], [ null, %else ]
+; CHECK: %result = phi i32* [ %tvar, %entry ], [ null, %else ]
 
 
 ; This tests that ExpandTls correctly handles a PHI node that contains
@@ -40,11 +41,11 @@ exit:
 }
 ; CHECK: define i32* @tls_phi_twice(i1 %arg) {
 ; CHECK: iftrue:
-; CHECK: %field{{.*}} = getelementptr %tls_struct, %tls_struct* %tls_struct{{.*}}, i32 -1, i32 0, i32 0
+; CHECK: %tvar{{.*}} = bitcast
 ; CHECK: iffalse:
-; CHECK: %field{{.*}} = getelementptr %tls_struct, %tls_struct* %tls_struct{{.*}}, i32 -1, i32 0, i32 0
+; CHECK: %tvar{{.*}} = bitcast
 ; CHECK: exit:
-; CHECK: %result = phi i32* [ %field{{.*}}, %iftrue ], [ %field{{.*}}, %iffalse ]
+; CHECK: %result = phi i32* [ %tvar{{.*}}, %iftrue ], [ %tvar{{.*}}, %iffalse ]
 
 
 ; In this corner case, ExpandTls must expand out @tvar only once,
@@ -57,4 +58,4 @@ done:
   ret i32* %result
 }
 ; CHECK: define i32* @tls_phi_multiple_entry(i1 %arg) {
-; CHECK: %result = phi i32* [ %field, %entry ], [ %field, %entry ]
+; CHECK: %result = phi i32* [ %tvar, %entry ], [ %tvar, %entry ]

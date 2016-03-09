@@ -59,8 +59,10 @@ using namespace llvm;
 namespace {
   struct VarInfo {
     GlobalVariable *TlsVar;
-    bool IsBss; // Whether variable is in zero-intialized part of template
-    int TemplateIndex;
+    // Offset of the TLS variable.  Initially this is a non-negative offset
+    // from the start of the TLS block.  After we adjust for the x86-style
+    // layout, this becomes a negative offset from the thread pointer.
+    uint32_t Offset;
   };
 
   class PassState {
@@ -69,7 +71,7 @@ namespace {
 
     Module *M;
     DataLayout DL;
-    uint64_t Offset;
+    uint32_t Offset;
     // 'Alignment' is the maximum variable alignment seen so far, in
     // bytes.  After visiting all TLS variables, this is the overall
     // alignment required for the TLS template.
@@ -106,14 +108,12 @@ static void setGlobalVariableValue(Module &M, const char *Name,
 
 // Insert alignment padding into the TLS template.
 static void padToAlignment(PassState *State,
-                           std::vector<Type*> *FieldTypes,
                            std::vector<Constant*> *FieldValues,
                            unsigned Alignment) {
   if ((State->Offset & (Alignment - 1)) != 0) {
     unsigned PadSize = Alignment - (State->Offset & (Alignment - 1));
     Type *i8 = Type::getInt8Ty(State->M->getContext());
     Type *PadType = ArrayType::get(i8, PadSize);
-    FieldTypes->push_back(PadType);
     if (FieldValues)
       FieldValues->push_back(Constant::getNullValue(PadType));
     State->Offset += PadSize;
@@ -123,23 +123,36 @@ static void padToAlignment(PassState *State,
   }
 }
 
-static void addVarToTlsTemplate(PassState *State,
-                                std::vector<Type*> *FieldTypes,
-                                std::vector<Constant*> *FieldValues,
-                                GlobalVariable *TlsVar) {
+static uint32_t addVarToTlsTemplate(PassState *State,
+                                    std::vector<Constant*> *FieldValues,
+                                    GlobalVariable *TlsVar) {
   unsigned Alignment = State->DL.getPreferredAlignment(TlsVar);
-  padToAlignment(State, FieldTypes, FieldValues, Alignment);
+  padToAlignment(State, FieldValues, Alignment);
 
-  FieldTypes->push_back(TlsVar->getType()->getElementType());
   if (FieldValues)
     FieldValues->push_back(TlsVar->getInitializer());
+  uint32_t Offset = State->Offset;
   State->Offset +=
       State->DL.getTypeAllocSize(TlsVar->getType()->getElementType());
+  return Offset;
 }
 
-static StructType *buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
-  std::vector<Type*> FieldBssTypes;
-  std::vector<Type*> FieldInitTypes;
+// This is similar to ConstantStruct::getAnon(), but we give a name to the
+// struct type to make the IR output more readable.
+static Constant *makeInitStruct(Module &M, ArrayRef<Constant *> Elements) {
+  SmallVector<Type *, 32> FieldTypes;
+  FieldTypes.reserve(Elements.size());
+  for (Constant *Val : Elements)
+    FieldTypes.push_back(Val->getType());
+
+  // We create the TLS template struct as "packed" because we insert
+  // alignment padding ourselves.
+  StructType *Ty = StructType::create(M.getContext(), FieldTypes,
+                                      "tls_init_template", /*isPacked=*/ true);
+  return ConstantStruct::get(Ty, Elements);
+}
+
+static void buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
   std::vector<Constant*> FieldInitValues;
   PassState State(&M);
 
@@ -152,24 +165,21 @@ static StructType *buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
                            + GV.getName());
       }
       if (!GV.getInitializer()->isNullValue()) {
-        addVarToTlsTemplate(&State, &FieldInitTypes, &FieldInitValues, &GV);
         VarInfo Info;
         Info.TlsVar = &GV;
-        Info.IsBss = false;
-        Info.TemplateIndex = FieldInitTypes.size() - 1;
+        Info.Offset = addVarToTlsTemplate(&State, &FieldInitValues, &GV);
         TlsVars->push_back(Info);
       }
     }
   }
+  uint32_t TemplateDataSize = State.Offset;
   // Handle zero-initialized TLS variables in a second pass, because
   // these should follow non-zero-initialized TLS variables.
   for (GlobalVariable &GV : M.globals()) {
     if (GV.isThreadLocal() && GV.getInitializer()->isNullValue()) {
-      addVarToTlsTemplate(&State, &FieldBssTypes, NULL, &GV);
       VarInfo Info;
       Info.TlsVar = &GV;
-      Info.IsBss = true;
-      Info.TemplateIndex = FieldBssTypes.size() - 1;
+      Info.Offset = addVarToTlsTemplate(&State, NULL, &GV);
       TlsVars->push_back(Info);
     }
   }
@@ -180,26 +190,12 @@ static StructType *buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
   // be memset() to zero at runtime.  This wastage doesn't seem
   // important gives that we're not trying to optimize packing by
   // reordering to put similarly-aligned variables together.
-  padToAlignment(&State, &FieldBssTypes, NULL, State.Alignment);
+  padToAlignment(&State, NULL, State.Alignment);
+  uint32_t TemplateTotalSize = State.Offset;
 
-  // We create the TLS template structs as "packed" because we insert
-  // alignment padding ourselves, and LLVM's implicit insertion of
-  // padding would interfere with ours.  tls_bss_template can start at
-  // a non-aligned address immediately following the last field in
-  // tls_init_template.
-  StructType *InitTemplateType =
-      StructType::create(M.getContext(), "tls_init_template");
-  InitTemplateType->setBody(FieldInitTypes, /*isPacked=*/true);
-  StructType *BssTemplateType =
-      StructType::create(M.getContext(), "tls_bss_template");
-  BssTemplateType->setBody(FieldBssTypes, /*isPacked=*/true);
-
-  StructType *TemplateType = StructType::create(M.getContext(), "tls_struct");
-  SmallVector<Type*, 2> TemplateTopFields;
-  TemplateTopFields.push_back(InitTemplateType);
-  TemplateTopFields.push_back(BssTemplateType);
-  TemplateType->setBody(TemplateTopFields, /*isPacked=*/true);
-  PointerType *TemplatePtrType = PointerType::get(TemplateType, 0);
+  // Adjust offsets for x86-style layout.
+  for (VarInfo &VarInfo : *TlsVars)
+    VarInfo.Offset -= TemplateTotalSize;
 
   // We define the following symbols, which are the same as those
   // defined by NaCl's original customized binutils linker scripts:
@@ -210,24 +206,25 @@ static StructType *buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
   // the original linker scripts.
 
   const char *StartSymbol = "__tls_template_start";
-  Constant *TemplateData = ConstantStruct::get(InitTemplateType,
-                                               FieldInitValues);
+  Constant *TemplateData = makeInitStruct(M, FieldInitValues);
   GlobalVariable *TemplateDataVar =
-      new GlobalVariable(M, InitTemplateType, /*isConstant=*/true,
+      new GlobalVariable(M, TemplateData->getType(), /*isConstant=*/true,
                          GlobalValue::InternalLinkage, TemplateData);
   setGlobalVariableValue(M, StartSymbol, TemplateDataVar);
   TemplateDataVar->setName(StartSymbol);
 
+  Type *I8 = Type::getInt8Ty(M.getContext());
+  Constant *TemplateAsI8 = ConstantExpr::getBitCast(TemplateDataVar,
+                                                    I8->getPointerTo());
+
   Constant *TdataEnd = ConstantExpr::getGetElementPtr(
-      InitTemplateType,
-      TemplateDataVar,
-      ConstantInt::get(M.getContext(), APInt(32, 1)));
+      I8, TemplateAsI8,
+      ConstantInt::get(M.getContext(), APInt(32, TemplateDataSize)));
   setGlobalVariableValue(M, "__tls_template_tdata_end", TdataEnd);
 
   Constant *TotalEnd = ConstantExpr::getGetElementPtr(
-      TemplateType,
-      ConstantExpr::getBitCast(TemplateDataVar, TemplatePtrType),
-      ConstantInt::get(M.getContext(), APInt(32, 1)));
+      I8, TemplateAsI8,
+      ConstantInt::get(M.getContext(), APInt(32, TemplateTotalSize)));
   setGlobalVariableValue(M, "__tls_template_end", TotalEnd);
 
   const char *AlignmentSymbol = "__tls_template_alignment";
@@ -238,12 +235,9 @@ static StructType *buildTlsTemplate(Module &M, std::vector<VarInfo> *TlsVars) {
       ConstantInt::get(M.getContext(), APInt(32, State.Alignment)));
   setGlobalVariableValue(M, AlignmentSymbol, AlignmentVar);
   AlignmentVar->setName(AlignmentSymbol);
-
-  return TemplateType;
 }
 
-static void rewriteTlsVars(Module &M, std::vector<VarInfo> *TlsVars,
-                           StructType *TemplateType) {
+static void rewriteTlsVars(Module &M, std::vector<VarInfo> *TlsVars) {
   // Set up the intrinsic that reads the thread pointer.
   Function *ReadTpFunc = Intrinsic::getDeclaration(&M, Intrinsic::nacl_read_tp);
 
@@ -252,20 +246,15 @@ static void rewriteTlsVars(Module &M, std::vector<VarInfo> *TlsVars,
     while (!Var->use_empty()) {
       Use *U = &*Var->use_begin();
       Instruction *InsertPt = PhiSafeInsertPt(U);
-      Value *RawThreadPtr = CallInst::Create(ReadTpFunc, "tls_raw", InsertPt);
-      Value *TypedThreadPtr = new BitCastInst(
-          RawThreadPtr, TemplateType->getPointerTo(), "tls_struct", InsertPt);
-      SmallVector<Value*, 3> Indexes;
-      // We use -1 because we use the x86-style TLS layout in which
-      // the TLS data is stored at addresses below the thread pointer.
-      Indexes.push_back(ConstantInt::get(
-          M.getContext(), APInt(32, -1)));
-      Indexes.push_back(ConstantInt::get(
-          M.getContext(), APInt(32, VarInfo.IsBss ? 1 : 0)));
-      Indexes.push_back(ConstantInt::get(
-          M.getContext(), APInt(32, VarInfo.TemplateIndex)));
-      Value *TlsField = GetElementPtrInst::Create(
-          TemplateType, TypedThreadPtr, Indexes, "field", InsertPt);
+      Value *ThreadPtr = CallInst::Create(ReadTpFunc, "thread_ptr", InsertPt);
+      Value *IndexList[] = {
+        ConstantInt::get(M.getContext(), APInt(32, VarInfo.Offset))
+      };
+      Value *TlsFieldI8 = GetElementPtrInst::Create(
+          Type::getInt8Ty(M.getContext()),
+          ThreadPtr, IndexList, Var->getName() + ".i8", InsertPt);
+      Value *TlsField = new BitCastInst(TlsFieldI8, Var->getType(),
+                                        Var->getName(), InsertPt);
       PhiSafeReplaceUses(U, TlsField);
     }
     Var->eraseFromParent();
@@ -331,8 +320,8 @@ bool ExpandTls::runOnModule(Module &M) {
   delete Pass;
 
   std::vector<VarInfo> TlsVars;
-  StructType *TemplateType = buildTlsTemplate(M, &TlsVars);
-  rewriteTlsVars(M, &TlsVars, TemplateType);
+  buildTlsTemplate(M, &TlsVars);
+  rewriteTlsVars(M, &TlsVars);
 
   defineTlsLayoutFunctions(M);
 
