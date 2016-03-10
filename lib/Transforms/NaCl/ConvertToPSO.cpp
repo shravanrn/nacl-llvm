@@ -27,18 +27,21 @@
 //     * when referenced by global variable initializers
 //     * when referenced by functions
 //  * Building a hash table of exported symbols to allow O(1)-time lookup
+//  * Support for thread-local variables (module-local use only)
 //
 // The following features are not implemented yet:
 //
-//  * Support for thread-local variables
+//  * Support for exporting and importing thread-local variables
 //  * Support for lazy binding (i.e. lazy symbol resolution)
 //
 //===----------------------------------------------------------------------===//
 
+#include "ExpandTls.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/ValueHandle.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -173,17 +176,6 @@ namespace {
   // needs to know about it outside this function.  (However, this would
   // change if we were to add support for lazy binding.)
   void buildGlobalsTable(Module &M) {
-    // We need to replace some uses of GlobalValues with "load"
-    // instructions, but that only works if functions don't contain
-    // ConstantExprs referencing those GlobalValues, because we can't
-    // modify a ConstantExpr to refer to an instruction.  To address this,
-    // we first convert all ConstantExprs inside functions into
-    // instructions by running the ExpandConstantExpr pass.
-    FunctionPass *Pass = createExpandConstantExprPass();
-    for (Function &Func : M.functions())
-      Pass->runOnFunction(Func);
-    delete Pass;
-
     // Search for all references to imported functions/variables by
     // functions.
     SmallVector<std::pair<Use *, unsigned>, 32> Refs;
@@ -234,6 +226,99 @@ namespace {
       Ref.first->set(new LoadInst(TableEntryAddr, GV->getName(), InsertPt));
     }
   }
+
+  // handleTlsVars() handles within-module references to thread-local (TLS)
+  // variables -- i.e. references to TLS variables that are defined within
+  // the module.
+  //
+  // Suppose we have the following access to a TLS variable:
+  //
+  //   static __thread int tls_var;
+  //
+  //   int *get_var() {
+  //     return &tls_var;
+  //   }
+  //
+  // We transform that code to the equivalent of this:
+  //
+  //   struct TLSBlockGetter {
+  //     // Returns pointer to the module's TLS block for the current thread.
+  //     void *(*func)(struct TLSBlockGetter *closure);
+  //     // The dynamic linker can use "arg" to store an ID for the module.
+  //     uintptr_t arg;
+  //   } __tls_getter_closure;
+  //
+  //   int *get_var() {
+  //     char *tls_base = __tls_getter_closure.func(&__tls_getter_closure);
+  //     return (int *) (tls_base + OFFSET_FOR_TLS_VAR);
+  //   }
+  //
+  // where OFFSET_FOR_TLS_VAR is a constant that is inlined into the code.
+  //
+  // Note that we only need one instance of TLSBlockGetter in the module.
+  void handleTlsVars(Module &M, Type *IntPtrType,
+                     SmallVectorImpl<TrackingVH<Constant>> *PsoRootTlsFields) {
+    TlsTemplate Templ;
+    buildTlsTemplate(M, &Templ);
+
+    // Construct the TLSBlockGetter struct type and its function type.
+    StructType *ClosureType =
+        StructType::create(M.getContext(), "TLSBlockGetter");
+    Type *Args[] = { ClosureType->getPointerTo() };
+    FunctionType *FuncType = FunctionType::get(
+        IntPtrType, Args, /*isVarArg=*/false);
+    Type *ClosureTypeFields[] = {
+      FuncType->getPointerTo(),
+      IntPtrType,
+    };
+    ClosureType->setBody(ClosureTypeFields);
+
+    Constant *TemplateDataVar = new GlobalVariable(
+        M, Templ.Data->getType(), /*isConstant=*/true,
+        GlobalValue::InternalLinkage, Templ.Data, "__tls_template");
+    Constant *Closure = new GlobalVariable(
+        M, ClosureType, /*isConstant=*/false, GlobalValue::InternalLinkage,
+        Constant::getNullValue(ClosureType), "__tls_getter_closure");
+
+    PsoRootTlsFields->push_back(TemplateDataVar);
+    PsoRootTlsFields->push_back(ConstantInt::get(IntPtrType, Templ.DataSize));
+    PsoRootTlsFields->push_back(ConstantInt::get(IntPtrType, Templ.TotalSize));
+    PsoRootTlsFields->push_back(ConstantInt::get(IntPtrType, Templ.Alignment));
+    PsoRootTlsFields->push_back(Closure);
+
+    // Rewrite accesses to the TLS variables.
+    for (auto &VarInfo : Templ.TlsVars) {
+      GlobalVariable *Var = VarInfo.TlsVar;
+
+      // Delete unused ConstantExprs that reference Var, because the code
+      // that follows assumes none remain.  ExpandConstantExprPass is one
+      // pass that is known to leave dead ConstantExprs behind, but other
+      // passes might too.
+      Var->removeDeadConstantUsers();
+
+      while (!Var->use_empty()) {
+        Use *U = &*Var->use_begin();
+        Instruction *InsertPt = PhiSafeInsertPt(U);
+
+        Value *Indexes[] = {
+          ConstantInt::get(M.getContext(), APInt(32, 0)),
+          ConstantInt::get(M.getContext(), APInt(32, 0)),
+        };
+        Value *FuncField = GetElementPtrInst::Create(
+            ClosureType, Closure, Indexes, "tls_getter_func_field", InsertPt);
+        Value *CallArgs[] = { Closure };
+        Value *Func = new LoadInst(FuncField, "tls_getter_func", InsertPt);
+        Value *Tp = CallInst::Create(Func, CallArgs, "tls_base", InsertPt);
+        Value *TlsField = BinaryOperator::Create(
+            Instruction::Add, Tp, ConstantInt::get(IntPtrType, VarInfo.Offset),
+            Var->getName(), InsertPt);
+        Value *Ptr = new IntToPtrInst(TlsField, Var->getType(),
+                                      Var->getName() + ".ptr", InsertPt);
+        PhiSafeReplaceUses(U, Ptr);
+      }
+      Var->eraseFromParent();
+    }
+  }
 }
 
 char ConvertToPSO::ID = 0;
@@ -246,6 +331,23 @@ bool ConvertToPSO::runOnModule(Module &M) {
   DataLayout DL(&M);
   Type *PtrType = Type::getInt8Ty(C)->getPointerTo();
   Type *IntPtrType = DL.getIntPtrType(C);
+
+  // Both handleTlsVars() and buildGlobalsTable() need to replace some uses
+  // of GlobalValues with instruction sequences, but that only works if
+  // functions don't contain ConstantExprs referencing those GlobalValues,
+  // because we can't modify a ConstantExpr to refer to an instruction.  To
+  // address this, we first convert all ConstantExprs inside functions into
+  // instructions by running the ExpandConstantExpr pass.
+  FunctionPass *ConstExprPass = createExpandConstantExprPass();
+  for (Function &Func : M.functions())
+    ConstExprPass->runOnFunction(Func);
+  delete ConstExprPass;
+
+  // We need to wrap these Constants with TrackingVH<> because our later
+  // call to FlattenGlobals will recreate some of them with different
+  // types.
+  SmallVector<TrackingVH<Constant>, 5> PsoRootTlsFields;
+  handleTlsVars(M, IntPtrType, &PsoRootTlsFields);
 
   buildGlobalsTable(M);
 
@@ -549,7 +651,7 @@ bool ConvertToPSO::runOnModule(Module &M) {
       M, StringTableArray->getType(), true, GlobalValue::InternalLinkage,
       StringTableArray, "string_table");
 
-  Constant *PsoRoot[] = {
+  SmallVector<Constant *, 32> PsoRoot = {
     ConstantInt::get(IntPtrType, PSOFormatVersion),
 
     // String Table
@@ -575,6 +677,8 @@ bool ConvertToPSO::runOnModule(Module &M) {
     ConstantInt::get(IntPtrType, Shift2),
     createDataArray(M, "bloom_filter", &BloomFilter),
   };
+  for (auto FieldVal : PsoRootTlsFields)
+    PsoRoot.push_back(FieldVal);
   Constant *PsoRootConst = ConstantStruct::getAnon(PsoRoot);
   new GlobalVariable(
       M, PsoRootConst->getType(), true, GlobalValue::ExternalLinkage,

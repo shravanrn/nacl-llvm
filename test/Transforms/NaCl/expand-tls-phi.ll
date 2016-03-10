@@ -1,4 +1,10 @@
+; Test the static-linking case.
 ; RUN: opt < %s -nacl-expand-tls -S | FileCheck %s
+
+; Test the dynamic-linking case.
+; RUN: opt < %s -convert-to-pso -S | FileCheck %s -check-prefix=DYNAMIC
+
+target datalayout = "p:32:32:32"
 
 
 @tvar = thread_local global i32 123
@@ -23,6 +29,13 @@ return:
 ; CHECK: else:
 ; CHECK: return:
 ; CHECK: %result = phi i32* [ %tvar, %entry ], [ null, %else ]
+; DYNAMIC: define internal i32* @get_tvar(i1 %cmp) {
+; DYNAMIC: entry:
+; DYNAMIC: %tvar = add i32 %tls_base, 0
+; DYNAMIC: %tvar.ptr = inttoptr i32 %tvar to i32*
+; DYNAMIC: else:
+; DYNAMIC: return:
+; DYNAMIC: %result = phi i32* [ %tvar.ptr, %entry ], [ null, %else ]
 
 
 ; This tests that ExpandTls correctly handles a PHI node that contains
@@ -46,6 +59,13 @@ exit:
 ; CHECK: %tvar{{.*}} = bitcast
 ; CHECK: exit:
 ; CHECK: %result = phi i32* [ %tvar{{.*}}, %iftrue ], [ %tvar{{.*}}, %iffalse ]
+; DYNAMIC: define internal i32* @tls_phi_twice(i1 %arg) {
+; DYNAMIC: iftrue:
+; DYNAMIC: %tvar{{.*}} = add
+; DYNAMIC: iffalse:
+; DYNAMIC: %tvar{{.*}} = add
+; DYNAMIC: exit:
+; DYNAMIC: %result = phi i32* [ %tvar{{.*}}, %iftrue ], [ %tvar{{.*}}, %iffalse ]
 
 
 ; In this corner case, ExpandTls must expand out @tvar only once,
@@ -59,3 +79,5 @@ done:
 }
 ; CHECK: define i32* @tls_phi_multiple_entry(i1 %arg) {
 ; CHECK: %result = phi i32* [ %tvar, %entry ], [ %tvar, %entry ]
+; DYNAMIC: define internal i32* @tls_phi_multiple_entry(i1 %arg) {
+; DYNAMIC: %result = phi i32* [ %tvar.ptr, %entry ], [ %tvar.ptr, %entry ]

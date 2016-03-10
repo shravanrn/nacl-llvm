@@ -43,6 +43,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ExpandTls.h"
+
 #include <vector>
 
 #include "llvm/Pass.h"
@@ -57,22 +59,6 @@
 using namespace llvm;
 
 namespace {
-  struct VarInfo {
-    GlobalVariable *TlsVar;
-    // Offset of the TLS variable.  Initially this is a non-negative offset
-    // from the start of the TLS block.  After we adjust for the x86-style
-    // layout, this becomes a negative offset from the thread pointer.
-    uint32_t Offset;
-  };
-
-  struct TlsTemplate {
-    std::vector<VarInfo> TlsVars;
-    Constant *Data;
-    uint32_t DataSize;
-    uint32_t TotalSize;
-    uint32_t Alignment;
-  };
-
   class PassState {
   public:
     PassState(Module *M): M(M), DL(M), Offset(0), Alignment(1) {}
@@ -160,7 +146,7 @@ static Constant *makeInitStruct(Module &M, ArrayRef<Constant *> Elements) {
   return ConstantStruct::get(Ty, Elements);
 }
 
-static void buildTlsTemplate(Module &M, TlsTemplate *Result) {
+void llvm::buildTlsTemplate(Module &M, TlsTemplate *Result) {
   std::vector<Constant*> FieldInitValues;
   PassState State(&M);
 
@@ -173,7 +159,7 @@ static void buildTlsTemplate(Module &M, TlsTemplate *Result) {
                            + GV.getName());
       }
       if (!GV.getInitializer()->isNullValue()) {
-        VarInfo Info;
+        TlsVarInfo Info;
         Info.TlsVar = &GV;
         Info.Offset = addVarToTlsTemplate(&State, &FieldInitValues, &GV);
         Result->TlsVars.push_back(Info);
@@ -185,7 +171,7 @@ static void buildTlsTemplate(Module &M, TlsTemplate *Result) {
   // these should follow non-zero-initialized TLS variables.
   for (GlobalVariable &GV : M.globals()) {
     if (GV.isThreadLocal() && GV.getInitializer()->isNullValue()) {
-      VarInfo Info;
+      TlsVarInfo Info;
       Info.TlsVar = &GV;
       Info.Offset = addVarToTlsTemplate(&State, NULL, &GV);
       Result->TlsVars.push_back(Info);
@@ -207,7 +193,7 @@ static void adjustToX86StyleLayout(TlsTemplate *Templ) {
   Templ->TotalSize = RoundUpToAlignment(Templ->TotalSize, Templ->Alignment);
 
   // Adjust offsets for x86-style layout.
-  for (VarInfo &VarInfo : Templ->TlsVars)
+  for (TlsVarInfo &VarInfo : Templ->TlsVars)
     VarInfo.Offset -= Templ->TotalSize;
 }
 
@@ -251,11 +237,11 @@ static void resolveTemplateVars(Module &M, TlsTemplate *Templ) {
   AlignmentVar->setName(AlignmentSymbol);
 }
 
-static void rewriteTlsVars(Module &M, std::vector<VarInfo> *TlsVars) {
+static void rewriteTlsVars(Module &M, std::vector<TlsVarInfo> *TlsVars) {
   // Set up the intrinsic that reads the thread pointer.
   Function *ReadTpFunc = Intrinsic::getDeclaration(&M, Intrinsic::nacl_read_tp);
 
-  for (VarInfo &VarInfo : *TlsVars) {
+  for (TlsVarInfo &VarInfo : *TlsVars) {
     GlobalVariable *Var = VarInfo.TlsVar;
     while (!Var->use_empty()) {
       Use *U = &*Var->use_begin();

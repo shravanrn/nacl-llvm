@@ -1,4 +1,10 @@
+; Test the static-linking case.
 ; RUN: opt < %s -nacl-expand-tls -S | FileCheck %s
+
+; Test the dynamic-linking case.
+; RUN: opt < %s -convert-to-pso -pnacl-abi-simplify-postopt \
+; RUN:     -verify-pnaclabi-module -verify-pnaclabi-functions -S \
+; RUN:     | FileCheck %s -check-prefix=DYNAMIC
 
 target datalayout = "p:32:32:32"
 
@@ -44,6 +50,10 @@ target datalayout = "p:32:32:32"
 
 ; CHECK: @__tls_template_alignment = internal constant i32 64
 
+; DYNAMIC: @__tls_template = internal constant <{ [4 x i8], i32, [25 x i8] }>
+
+; DYNAMIC: @__tls_getter_closure = internal global [8 x i8] zeroinitializer
+
 
 ; Test for use of correct offsets.
 
@@ -52,6 +62,8 @@ define i16* @get_tvar1() {
 }
 ; CHECK: define i16* @get_tvar1()
 ; CHECK: %tvar1.i8 = getelementptr i8, i8* %thread_ptr, i32 -128
+; DYNAMIC: define internal i32 @get_tvar1()
+; DYNAMIC: %tvar1 = add i32 %tls_base, 0
 
 
 define i32** @get_tvar2() {
@@ -59,6 +71,8 @@ define i32** @get_tvar2() {
 }
 ; CHECK: define i32** @get_tvar2()
 ; CHECK: %tvar2.i8 = getelementptr i8, i8* %thread_ptr, i32 -124
+; DYNAMIC: define internal i32 @get_tvar2()
+; DYNAMIC: %tvar2 = add i32 %tls_base, 4
 
 
 define i8* @get_tvar_aligned() {
@@ -66,6 +80,8 @@ define i8* @get_tvar_aligned() {
 }
 ; CHECK: define i8* @get_tvar_aligned()
 ; CHECK: %tvar_aligned.i8 = getelementptr i8, i8* %thread_ptr, i32 -96
+; DYNAMIC: define internal i32 @get_tvar_aligned()
+; DYNAMIC: %tvar_aligned = add i32 %tls_base, 32
 
 
 define i8* @get_bss_tvar1() {
@@ -73,6 +89,8 @@ define i8* @get_bss_tvar1() {
 }
 ; CHECK: define i8* @get_bss_tvar1()
 ; CHECK: %bss_tvar1.i8 = getelementptr i8, i8* %thread_ptr, i32 -95
+; DYNAMIC: define internal i32 @get_bss_tvar1()
+; DYNAMIC: %bss_tvar1 = add i32 %tls_base, 33
 
 
 define i32* @get_bss_tvar_aligned() {
@@ -80,6 +98,8 @@ define i32* @get_bss_tvar_aligned() {
 }
 ; CHECK: define i32* @get_bss_tvar_aligned()
 ; CHECK: %bss_tvar_aligned.i8 = getelementptr i8, i8* %thread_ptr, i32 -64
+; DYNAMIC: define internal i32 @get_bss_tvar_aligned()
+; DYNAMIC: %bss_tvar_aligned = add i32 %tls_base, 64
 
 
 ; Check that we define global variables for TLS templates
