@@ -59,19 +59,6 @@
 using namespace llvm;
 
 namespace {
-  class PassState {
-  public:
-    PassState(Module *M): M(M), DL(M), Offset(0), Alignment(1) {}
-
-    Module *M;
-    DataLayout DL;
-    uint32_t Offset;
-    // 'Alignment' is the maximum variable alignment seen so far, in
-    // bytes.  After visiting all TLS variables, this is the overall
-    // alignment required for the TLS template.
-    uint32_t Alignment;
-  };
-
   class ExpandTls : public ModulePass {
   public:
     static char ID; // Pass identification, replacement for typeid
@@ -100,37 +87,6 @@ static void setGlobalVariableValue(Module &M, const char *Name,
   }
 }
 
-// Insert alignment padding into the TLS template.
-static void padToAlignment(PassState *State,
-                           std::vector<Constant*> *FieldValues,
-                           unsigned Alignment) {
-  if ((State->Offset & (Alignment - 1)) != 0) {
-    unsigned PadSize = Alignment - (State->Offset & (Alignment - 1));
-    Type *i8 = Type::getInt8Ty(State->M->getContext());
-    Type *PadType = ArrayType::get(i8, PadSize);
-    if (FieldValues)
-      FieldValues->push_back(Constant::getNullValue(PadType));
-    State->Offset += PadSize;
-  }
-  if (State->Alignment < Alignment) {
-    State->Alignment = Alignment;
-  }
-}
-
-static uint32_t addVarToTlsTemplate(PassState *State,
-                                    std::vector<Constant*> *FieldValues,
-                                    GlobalVariable *TlsVar) {
-  unsigned Alignment = State->DL.getPreferredAlignment(TlsVar);
-  padToAlignment(State, FieldValues, Alignment);
-
-  if (FieldValues)
-    FieldValues->push_back(TlsVar->getInitializer());
-  uint32_t Offset = State->Offset;
-  State->Offset +=
-      State->DL.getTypeAllocSize(TlsVar->getType()->getElementType());
-  return Offset;
-}
-
 // This is similar to ConstantStruct::getAnon(), but we give a name to the
 // struct type to make the IR output more readable.
 static Constant *makeInitStruct(Module &M, ArrayRef<Constant *> Elements) {
@@ -148,7 +104,34 @@ static Constant *makeInitStruct(Module &M, ArrayRef<Constant *> Elements) {
 
 void llvm::buildTlsTemplate(Module &M, TlsTemplate *Result) {
   std::vector<Constant*> FieldInitValues;
-  PassState State(&M);
+  DataLayout DL(&M);
+  uint32_t CurrentOffset = 0;
+  uint32_t OverallAlignment = 1;
+
+  auto addVarToTlsTemplate = [&](GlobalVariable *TlsVar, bool IsBss) {
+    // Add alignment padding if necessary.
+    uint32_t VarAlignment = DL.getPreferredAlignment(TlsVar);
+    if ((CurrentOffset & (VarAlignment - 1)) != 0) {
+      uint32_t PadSize = VarAlignment - (CurrentOffset & (VarAlignment - 1));
+      CurrentOffset += PadSize;
+      if (!IsBss) {
+        Type *I8 = Type::getInt8Ty(M.getContext());
+        Type *PadType = ArrayType::get(I8, PadSize);
+        FieldInitValues.push_back(Constant::getNullValue(PadType));
+      }
+    }
+    if (OverallAlignment < VarAlignment)
+      OverallAlignment = VarAlignment;
+
+    TlsVarInfo Info;
+    Info.TlsVar = TlsVar;
+    Info.Offset = CurrentOffset;
+    Result->TlsVars.push_back(Info);
+
+    CurrentOffset += DL.getTypeAllocSize(TlsVar->getType()->getElementType());
+    if (!IsBss)
+      FieldInitValues.push_back(TlsVar->getInitializer());
+  };
 
   for (GlobalVariable &GV : M.globals()) {
     if (GV.isThreadLocal()) {
@@ -158,27 +141,19 @@ void llvm::buildTlsTemplate(Module &M, TlsTemplate *Result) {
         report_fatal_error(std::string("TLS variable without an initializer: ")
                            + GV.getName());
       }
-      if (!GV.getInitializer()->isNullValue()) {
-        TlsVarInfo Info;
-        Info.TlsVar = &GV;
-        Info.Offset = addVarToTlsTemplate(&State, &FieldInitValues, &GV);
-        Result->TlsVars.push_back(Info);
-      }
+      if (!GV.getInitializer()->isNullValue())
+        addVarToTlsTemplate(&GV, /*IsBss=*/ false);
     }
   }
-  Result->DataSize = State.Offset;
+  Result->DataSize = CurrentOffset;
   // Handle zero-initialized TLS variables in a second pass, because
   // these should follow non-zero-initialized TLS variables.
   for (GlobalVariable &GV : M.globals()) {
-    if (GV.isThreadLocal() && GV.getInitializer()->isNullValue()) {
-      TlsVarInfo Info;
-      Info.TlsVar = &GV;
-      Info.Offset = addVarToTlsTemplate(&State, NULL, &GV);
-      Result->TlsVars.push_back(Info);
-    }
+    if (GV.isThreadLocal() && GV.getInitializer()->isNullValue())
+      addVarToTlsTemplate(&GV, /*IsBss=*/ true);
   }
-  Result->TotalSize = State.Offset;
-  Result->Alignment = State.Alignment;
+  Result->TotalSize = CurrentOffset;
+  Result->Alignment = OverallAlignment;
   Result->Data = makeInitStruct(M, FieldInitValues);
 }
 
