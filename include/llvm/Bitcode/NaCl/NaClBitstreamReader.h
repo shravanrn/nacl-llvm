@@ -27,6 +27,7 @@
 namespace llvm {
 
 class Deserializer;
+class NaClBitstreamCursor;
 
 namespace naclbitc {
 
@@ -55,18 +56,89 @@ raw_ostream &ErrorAt(raw_ostream &Out, ErrorLevel Level,
 /// the NaClBitstreamCursor class.
 class NaClBitstreamReader {
 public:
-  /// This contains information emitted to BLOCKINFO_BLOCK blocks. These
-  /// describe abbreviations that all blocks of the specified ID inherit.
-  struct BlockInfo {
-    unsigned BlockID;
-    std::vector<NaClBitCodeAbbrev*> Abbrevs;
+  // Models a raw list of abbreviations.
+  static const size_t DefaultAbbrevListSize = 12;
+  using AbbrevListVector = SmallVector<NaClBitCodeAbbrev *,
+                                       DefaultAbbrevListSize>;
+
+  // Models and maintains a list of abbreviations. In particular, it maintains
+  // updating reference counts of abbreviation operators within the abbreviation
+  // list.
+  class AbbrevList {
+  public:
+    AbbrevList() = default;
+    explicit AbbrevList(const AbbrevList &NewAbbrevs) {
+      appendList(NewAbbrevs);
+    }
+    AbbrevList &operator=(const AbbrevList &Rhs) {
+      clear();
+      appendList(Rhs);
+      return *this;
+    }
+    // Creates a new (empty) abbreviation, appends it to this, and then returns
+    // the new abbreviation.
+    NaClBitCodeAbbrev *appendCreate() {
+      NaClBitCodeAbbrev *Abbv = new NaClBitCodeAbbrev();
+      Abbrevs.push_back(Abbv);
+      return Abbv;
+    }
+    // Appends the given abbreviation to this.
+    void append(NaClBitCodeAbbrev *Abbrv) {
+      Abbrv->addRef();
+      Abbrevs.push_back(Abbrv);
+    }
+    // Appends the contents of NewAbbrevs to this.
+    void appendList(const AbbrevList &NewAbbrevs) {
+      for (NaClBitCodeAbbrev *Abbrv : NewAbbrevs.Abbrevs)
+        append(Abbrv);
+    }
+    // Returns last abbreviation on list.
+    NaClBitCodeAbbrev *last() { return Abbrevs.back(); }
+    // Removes the last element of the list.
+    void popLast() {
+      Abbrevs.back()->dropRef();
+      Abbrevs.pop_back();
+    }
+    // Empties abbreviation list.
+    void clear() {
+      while(!Abbrevs.empty())
+        popLast();
+    }
+    // Allow read access to vector defining list.
+    const AbbrevListVector &getVector() const { return Abbrevs; }
+    ~AbbrevList() { clear(); }
+  private:
+    AbbrevListVector Abbrevs;
   };
+
+  /// This contains information about abbreviations in blocks defined in the
+  /// BLOCKINFO_BLOCK block.  These describe global abbreviations that apply to
+  /// all succeeding blocks of the specified ID.
+  class BlockInfo {
+    BlockInfo &operator=(const BlockInfo&) = delete;
+  public:
+    BlockInfo() = default;
+    explicit BlockInfo(unsigned BlockID)
+        : BlockID(BlockID), Abbrevs() {}
+    BlockInfo(const BlockInfo&) = default;
+    unsigned getBlockID() const { return BlockID; }
+    void setBlockID(unsigned ID) { BlockID = ID; }
+    AbbrevList &getAbbrevs() { return Abbrevs; }
+    ~BlockInfo() {}
+  private:
+    unsigned BlockID;
+    AbbrevList Abbrevs;
+  };
+
 private:
   friend class NaClBitstreamCursor;
 
   std::unique_ptr<MemoryObject> BitcodeBytes;
 
   std::vector<BlockInfo> BlockInfoRecords;
+
+  // True if the BlockInfo block has been read.
+  bool HasReadBlockInfoBlock = false;
 
   /// \brief Holds the offset of the first byte after the header.
   size_t InitialAddress;
@@ -106,17 +178,7 @@ public:
   // Returns the memory object that is being read.
   MemoryObject &getBitcodeBytes() { return *BitcodeBytes; }
 
-  ~NaClBitstreamReader() {
-    // Free the BlockInfoRecords.
-    while (!BlockInfoRecords.empty()) {
-      BlockInfo &Info = BlockInfoRecords.back();
-      // Free blockinfo abbrev info.
-      for (unsigned i = 0, e = static_cast<unsigned>(Info.Abbrevs.size());
-           i != e; ++i)
-        Info.Abbrevs[i]->dropRef();
-      BlockInfoRecords.pop_back();
-    }
-  }
+  ~NaClBitstreamReader() {}
 
   /// \brief Returns the initial address (after the header) of the input stream.
   size_t getInitialAddress() const {
@@ -127,21 +189,17 @@ public:
   // Block Manipulation
   //===--------------------------------------------------------------------===//
 
-  /// Return true if we've already read and processed the block info block for
-  /// this Bitstream. We only process it for the first cursor that walks over
-  /// it.
-  bool hasBlockInfoRecords() const { return !BlockInfoRecords.empty(); }
-
   /// If there is block info for the specified ID, return it, otherwise return
   /// null.
   const BlockInfo *getBlockInfo(unsigned BlockID) const {
     // Common case, the most recent entry matches BlockID.
-    if (!BlockInfoRecords.empty() && BlockInfoRecords.back().BlockID == BlockID)
+    if (!BlockInfoRecords.empty() &&
+        BlockInfoRecords.back().getBlockID() == BlockID)
       return &BlockInfoRecords.back();
 
     for (unsigned i = 0, e = static_cast<unsigned>(BlockInfoRecords.size());
          i != e; ++i)
-      if (BlockInfoRecords[i].BlockID == BlockID)
+      if (BlockInfoRecords[i].getBlockID() == BlockID)
         return &BlockInfoRecords[i];
     return nullptr;
   }
@@ -151,8 +209,7 @@ public:
       return *const_cast<BlockInfo*>(BI);
 
     // Otherwise, add a new record.
-    BlockInfoRecords.push_back(BlockInfo());
-    BlockInfoRecords.back().BlockID = BlockID;
+    BlockInfoRecords.push_back(BlockInfo(BlockID));
     return BlockInfoRecords.back();
   }
 };
@@ -205,7 +262,7 @@ public:
   virtual ~NaClAbbrevListener() {}
 
   /// Called to process the read abbreviation.
-  virtual void ProcessAbbreviation(NaClBitCodeAbbrev *Abbrev,
+  virtual void ProcessAbbreviation(NaClBitCodeAbbrev *Abbrv,
                                    bool IsLocal) = 0;
 
   /// Called after entering block. NumWords is the number of words
@@ -276,22 +333,65 @@ private:
   /// is always from [0...bits_of(word_t)-1] inclusive.
   unsigned BitsInCurWord;
 
-  /// This is the declared size of code values used for the current
-  /// block, in bits.
-  NaClBitcodeSelectorAbbrev CurCodeSize;
-
-  /// Abbrevs installed in this block.
-  std::vector<NaClBitCodeAbbrev*> CurAbbrevs;
-
-  struct Block {
-    NaClBitcodeSelectorAbbrev PrevCodeSize;
-    std::vector<NaClBitCodeAbbrev*> PrevAbbrevs;
-    Block() : PrevCodeSize() {}
-    explicit Block(const NaClBitcodeSelectorAbbrev& PCS)
-        : PrevCodeSize(PCS) {}
+  // Data specific to a block being scanned.
+  class Block {
+  public:
+    Block() = delete;
+    Block &operator=(const Block &Rhs) {
+      GlobalAbbrevs = Rhs.GlobalAbbrevs;
+      NumGlobalAbbrevs = Rhs.NumGlobalAbbrevs;
+      LocalAbbrevs = Rhs.LocalAbbrevs;
+      CodeAbbrev = Rhs.CodeAbbrev;
+      return *this;
+    }
+    Block(NaClBitstreamReader::BlockInfo *GlobalAbbrevs,
+          NaClBitcodeSelectorAbbrev& CodeAbbrev)
+        : GlobalAbbrevs(GlobalAbbrevs),
+          NumGlobalAbbrevs(GlobalAbbrevs->getAbbrevs().getVector().size()),
+          LocalAbbrevs(), CodeAbbrev(CodeAbbrev) {}
+    Block(NaClBitstreamReader::BlockInfo *GlobalAbbrevs)
+        : GlobalAbbrevs(GlobalAbbrevs),
+          NumGlobalAbbrevs(GlobalAbbrevs->getAbbrevs().getVector().size()),
+          LocalAbbrevs(), CodeAbbrev() {}
+    ~Block() = default;
+    const NaClBitstreamReader::AbbrevList &getGlobalAbbrevs() const {
+      return GlobalAbbrevs->getAbbrevs();
+    }
+    unsigned getNumGlobalAbbrevs() const { return NumGlobalAbbrevs; }
+    const NaClBitstreamReader::AbbrevList &getLocalAbbrevs() const {
+      return LocalAbbrevs;
+    }
+    const NaClBitcodeSelectorAbbrev &getCodeAbbrev() const {
+      return CodeAbbrev;
+    }
+    void setCodeAbbrev(NaClBitcodeSelectorAbbrev &Abbrev) {
+      CodeAbbrev = Abbrev;
+    }
+    NaClBitCodeAbbrev *appendLocalCreate() {
+      return LocalAbbrevs.appendCreate();
+    }
+    void moveLocalAbbrevToAbbrevList(NaClBitstreamReader::AbbrevList *List) {
+      if (List != &LocalAbbrevs) {
+        NaClBitCodeAbbrev *Abbv = LocalAbbrevs.last();
+        List->append(Abbv);
+        LocalAbbrevs.popLast();
+      }
+    }
+  private:
+    friend class NaClBitstreamCursor;
+    // The global abbreviations associated with this scope.
+    NaClBitstreamReader::BlockInfo *GlobalAbbrevs;
+    // Number of abbreviations when block was entered. Used to limit scope of
+    // CurBlockInfo, since any abbreviation added inside a BlockInfo block
+    // (within this block) must not effect global abbreviations.
+    unsigned NumGlobalAbbrevs;
+    NaClBitstreamReader::AbbrevList LocalAbbrevs;
+    // This is the declared size of code values used for the current block, in
+    // bits.
+    NaClBitcodeSelectorAbbrev CodeAbbrev;
   };
 
-  /// This tracks the codesize of parent blocks.
+  /// This tracks the Block-specific information for each nested block.
   SmallVector<Block, 8> BlockScope;
 
   NaClBitstreamCursor(const NaClBitstreamCursor &) = delete;
@@ -311,13 +411,20 @@ public:
     NextChar = (BitStream == nullptr) ? 0 : BitStream->getInitialAddress();
     Size = 0;
     BitsInCurWord = 0;
+    if (BitStream) {
+      BlockScope.push_back(
+          Block(&BitStream->getOrCreateBlockInfo(naclbitc::TOP_LEVEL_BLOCKID)));
+    }
   }
 
   ~NaClBitstreamCursor() {
     freeState();
   }
 
-  void freeState();
+  void freeState() {
+    while (!BlockScope.empty())
+      BlockScope.pop_back();
+  }
 
   // Replaces the current bitstream error handler with the new
   // handler. Takes ownership of the new handler and deletes it when
@@ -342,7 +449,9 @@ public:
   }
 
   /// Return the number of bits used to encode an abbrev #.
-  unsigned getAbbrevIDWidth() const { return CurCodeSize.NumBits; }
+  unsigned getAbbrevIDWidth() const {
+    return BlockScope.back().getCodeAbbrev().NumBits;
+  }
 
   /// Return the bit # of the bit we are reading.
   uint64_t GetCurrentBitNo() const {
@@ -559,9 +668,11 @@ private:
 public:
 
   unsigned ReadCode() {
-    return CurCodeSize.IsFixed
-        ? Read(CurCodeSize.NumBits)
-        : ReadVBR(CurCodeSize.NumBits);
+    const NaClBitcodeSelectorAbbrev &CodeAbbrev =
+        BlockScope.back().getCodeAbbrev();
+    return CodeAbbrev.IsFixed
+        ? Read(CodeAbbrev.NumBits)
+        : ReadVBR(CodeAbbrev.NumBits);
   }
 
   // Block header:
@@ -602,23 +713,11 @@ public:
     //    [END_BLOCK, <align4bytes>]
     SkipToFourByteBoundary();
 
-    popBlockScope();
+    BlockScope.pop_back();
     return false;
   }
 
 private:
-
-  void popBlockScope() {
-    CurCodeSize = BlockScope.back().PrevCodeSize;
-
-    // Delete abbrevs from popped scope.
-    for (unsigned i = 0, e = static_cast<unsigned>(CurAbbrevs.size());
-         i != e; ++i)
-      CurAbbrevs[i]->dropRef();
-
-    BlockScope.back().PrevAbbrevs.swap(CurAbbrevs);
-    BlockScope.pop_back();
-  }
 
   //===--------------------------------------------------------------------===//
   // Record Processing
@@ -657,9 +756,16 @@ public:
   /// Return the abbreviation for the specified AbbrevId.
   const NaClBitCodeAbbrev *getAbbrev(unsigned AbbrevID) const {
     unsigned AbbrevNo = AbbrevID-naclbitc::FIRST_APPLICATION_ABBREV;
-    if (AbbrevNo >= CurAbbrevs.size())
+    const Block &CurBlock = BlockScope.back();
+    const unsigned NumGlobalAbbrevs = CurBlock.getNumGlobalAbbrevs();
+    if (AbbrevNo < NumGlobalAbbrevs)
+      return CurBlock.getGlobalAbbrevs().getVector()[AbbrevNo];
+    unsigned LocalAbbrevNo = AbbrevNo - NumGlobalAbbrevs;
+    NaClBitstreamReader::AbbrevListVector
+        LocalAbbrevs = CurBlock.getLocalAbbrevs().getVector();
+    if (LocalAbbrevNo >= LocalAbbrevs.size())
       reportInvalidAbbrevNumber(AbbrevID);
-    return CurAbbrevs[AbbrevNo];
+    return LocalAbbrevs[LocalAbbrevNo];
   }
 
   /// Read the current record and discard it.

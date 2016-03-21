@@ -22,7 +22,7 @@
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
-#include <cassert>
+#include <climits>
 
 namespace llvm {
 class raw_ostream;
@@ -79,8 +79,11 @@ enum StandardWidths {
     /// standard abbrevs that should be available to all blocks of a specified
     /// ID.
     BLOCKINFO_BLOCK_ID = 0,
-
-    // Block IDs 1-7 are reserved for future expansion.
+    // Block IDs 1-6 are reserved for future expansion.
+    // Dummy block added around all records in a bitcode file. Allows the code
+    // to treat top-level records like all other records (i.e. all records
+    // appear in a block).
+    TOP_LEVEL_BLOCKID = 7,
     FIRST_APPLICATION_BLOCKID = 8
   };
 

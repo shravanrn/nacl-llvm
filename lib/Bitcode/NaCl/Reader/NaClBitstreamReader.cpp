@@ -54,21 +54,6 @@ Fatal(const std::string &ErrorMessage) const {
   report_fatal_error(StrBuf.str());
 }
 
-void NaClBitstreamCursor::freeState() {
-  // Free all the Abbrevs.
-  for (size_t i = 0, e = CurAbbrevs.size(); i != e; ++i)
-    CurAbbrevs[i]->dropRef();
-  CurAbbrevs.clear();
-
-  // Free all the Abbrevs in the block scope.
-  for (size_t S = 0, e = BlockScope.size(); S != e; ++S) {
-    std::vector<NaClBitCodeAbbrev*> &Abbrevs = BlockScope[S].PrevAbbrevs;
-    for (size_t i = 0, e = Abbrevs.size(); i != e; ++i)
-      Abbrevs[i]->dropRef();
-  }
-  BlockScope.clear();
-}
-
 void NaClBitstreamCursor::reportInvalidAbbrevNumber(unsigned AbbrevNo) const {
   std::string Buffer;
   raw_string_ostream StrBuf(Buffer);
@@ -86,28 +71,17 @@ void NaClBitstreamCursor::reportInvalidJumpToBit(uint64_t BitNo) const {
 /// EnterSubBlock - Having read the ENTER_SUBBLOCK abbrevid, enter
 /// the block, and return true if the block has an error.
 bool NaClBitstreamCursor::EnterSubBlock(unsigned BlockID, unsigned *NumWordsP) {
-  // Save the current block's state on BlockScope.
-  BlockScope.push_back(Block(CurCodeSize));
-  BlockScope.back().PrevAbbrevs.swap(CurAbbrevs);
-
-  // Add the abbrevs specific to this block to the CurAbbrevs list.
-  if (const NaClBitstreamReader::BlockInfo *Info =
-      BitStream->getBlockInfo(BlockID)) {
-    for (size_t i = 0, e = Info->Abbrevs.size(); i != e; ++i) {
-      CurAbbrevs.push_back(Info->Abbrevs[i]);
-      CurAbbrevs.back()->addRef();
-    }
-  }
-
-  // Get the codesize of this block.
-  CurCodeSize.IsFixed = true;
-  CurCodeSize.NumBits = ReadVBR(naclbitc::CodeLenWidth);
+  const bool IsFixed = true;
+  NaClBitcodeSelectorAbbrev
+      CodeAbbrev(IsFixed, ReadVBR(naclbitc::CodeLenWidth));
+  BlockScope.push_back(Block(&BitStream->getOrCreateBlockInfo(BlockID),
+                             CodeAbbrev));
   SkipToFourByteBoundary();
   unsigned NumWords = Read(naclbitc::BlockSizeWidth);
   if (NumWordsP) *NumWordsP = NumWords;
 
   // Validate that this block is sane.
-  if (CurCodeSize.NumBits == 0 || AtEndOfStream())
+  if (BlockScope.back().getCodeAbbrev().NumBits == 0 || AtEndOfStream())
     return true;
 
   return false;
@@ -282,7 +256,7 @@ getEncoding(uint64_t Value) {
 
 void NaClBitstreamCursor::ReadAbbrevRecord(bool IsLocal,
                                            NaClAbbrevListener *Listener) {
-  NaClBitCodeAbbrev *Abbv = new NaClBitCodeAbbrev();
+  NaClBitCodeAbbrev *Abbv = BlockScope.back().appendLocalCreate();
   unsigned NumOpInfo = ReadVBR(5);
   if (Listener) Listener->Values.push_back(NumOpInfo);
   for (unsigned i = 0; i != NumOpInfo; ++i) {
@@ -332,7 +306,6 @@ void NaClBitstreamCursor::ReadAbbrevRecord(bool IsLocal,
   SkipToByteBoundaryIfAligned();
   if (!Abbv->isValid())
     ErrHandler->Fatal("Invalid abbreviation specified in bitcode file");
-  CurAbbrevs.push_back(Abbv);
   if (Listener) {
     Listener->ProcessAbbreviation(Abbv, IsLocal);
     // Reset record information of the listener.
@@ -359,8 +332,10 @@ void NaClBitstreamCursor::SkipAbbrevRecord() {
 
 bool NaClBitstreamCursor::ReadBlockInfoBlock(NaClAbbrevListener *Listener) {
   // If this is the second stream to get to the block info block, skip it.
-  if (BitStream->hasBlockInfoRecords())
+  if (BitStream->HasReadBlockInfoBlock)
     return SkipBlock();
+
+  BitStream->HasReadBlockInfoBlock = true;
 
   unsigned NumWords;
   if (EnterSubBlock(naclbitc::BLOCKINFO_BLOCK_ID, &NumWords)) return true;
@@ -368,7 +343,10 @@ bool NaClBitstreamCursor::ReadBlockInfoBlock(NaClAbbrevListener *Listener) {
   if (Listener) Listener->BeginBlockInfoBlock(NumWords);
 
   NaClBitcodeRecordVector Record;
-  NaClBitstreamReader::BlockInfo *CurBlockInfo = 0;
+  Block &CurBlock = BlockScope.back();
+  NaClBitstreamReader::AbbrevList *UpdateAbbrevs =
+      &CurBlock.GlobalAbbrevs->getAbbrevs();
+  bool FoundSetBID = false;
 
   // Read records of the BlockInfo block.
   while (1) {
@@ -389,14 +367,13 @@ bool NaClBitstreamCursor::ReadBlockInfoBlock(NaClAbbrevListener *Listener) {
 
     // Read abbrev records, associate them with CurBID.
     if (Entry.ID == naclbitc::DEFINE_ABBREV) {
-      if (!CurBlockInfo) return true;
       ReadAbbrevRecord(false, Listener);
 
-      // ReadAbbrevRecord installs the abbrev in CurAbbrevs.  Move it to the
-      // appropriate BlockInfo.
-      NaClBitCodeAbbrev *Abbv = CurAbbrevs.back();
-      CurAbbrevs.pop_back();
-      CurBlockInfo->Abbrevs.push_back(Abbv);
+      // ReadAbbrevRecord installs a local abbreviation.  Move it to the
+      // appropriate BlockInfo if the corresponding SetBID record has been
+      // found.
+      if (FoundSetBID)
+        CurBlock.moveLocalAbbrevToAbbrevList(UpdateAbbrevs);
       continue;
     }
 
@@ -408,7 +385,9 @@ bool NaClBitstreamCursor::ReadBlockInfoBlock(NaClAbbrevListener *Listener) {
         return true;
       case naclbitc::BLOCKINFO_CODE_SETBID:
         if (Record.size() < 1) return true;
-        CurBlockInfo = &BitStream->getOrCreateBlockInfo((unsigned)Record[0]);
+        FoundSetBID = true;
+        UpdateAbbrevs =
+            &BitStream->getOrCreateBlockInfo((unsigned)Record[0]).getAbbrevs();
         if (Listener) {
           Listener->Values = Record;
           Listener->SetBID();
