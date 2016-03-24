@@ -597,12 +597,26 @@ protected:
   // The error stream to use if non-null (uses errs() if null).
   raw_ostream *ErrStream;
 
-  // Creates a block parser to parse the block associated with the
-  // bitcode entry that defines the beginning of a block. This
-  // instance actually parses the corresponding block.
+  // Creates a block parser to parse the block associated with the bitcode entry
+  // that defines the beginning of a block. This instance actually parses the
+  // corresponding block. Inherits the bitstream cursor from the
+  // EnclosingParser.
   NaClBitcodeParser(unsigned BlockID, NaClBitcodeParser *EnclosingParser)
       : EnclosingParser(EnclosingParser),
         Block(BlockID, EnclosingParser->Record),
+        Record(Block),
+        Listener(EnclosingParser->Listener),
+        ErrStream(EnclosingParser->ErrStream)
+  {}
+
+  // Same as above, but use the supplied bitstream cursor (instead of
+  // inheriting from the enclosing parser). This constructor allows
+  // parallel parsing of subblocks, by allowing the caller to generate
+  // a different Cursor for each block to be parsed in parallel.
+  NaClBitcodeParser(unsigned BlockID, NaClBitcodeParser *EnclosingParser,
+                    NaClBitstreamCursor &Cursor)
+      : EnclosingParser(EnclosingParser),
+        Block(BlockID, Cursor),
         Record(Block),
         Listener(EnclosingParser->Listener),
         ErrStream(EnclosingParser->ErrStream)
