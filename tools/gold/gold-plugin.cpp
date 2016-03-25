@@ -15,6 +15,7 @@
 #include "llvm/Config/config.h" // plugin-api.h requires HAVE_STDINT_H
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Analysis/NaCl.h" // @LOCALMOD
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/NaCl/NaClBitcodeWriterPass.h" // @LOCALMOD
@@ -111,6 +112,7 @@ namespace options {
   static unsigned OptLevel = 2;
   // @LOCALMOD-BEGIN
   static bool ABISimplify = true;
+  static bool ABIVerify = true;
   static bool Finalize = true;
   static bool MinSFI = false;
   // @LOCALMOD-END
@@ -156,6 +158,10 @@ namespace options {
       ABISimplify = true;
     } else if (opt == "no-abi-simplify") {
       ABISimplify = false;
+    } else if (opt == "abi-verify") {
+      ABIVerify = true;
+    } else if (opt == "no-abi-verify") {
+      ABIVerify = false;
     } else if (opt == "finalize") {
       Finalize = true;
     } else if (opt == "no-finalize") {
@@ -794,25 +800,51 @@ static void runLTOPasses(Module &M, TargetMachine &TM) {
 static void runSimplificationPasses(Module &M, Triple &TheTriple) {
   legacy::PassManager Passes;
 
+  if (options::Finalize)
+    StripDebugInfo(M);
+
   TargetLibraryInfoImpl TLII(TheTriple);
   TLII.disableAllFunctions();
-  Passes.add(new TargetLibraryInfoWrapperPass());
+  Passes.add(new TargetLibraryInfoWrapperPass(TLII));
 
   PNaClABISimplifyAddPreOptPasses(&TheTriple, Passes);
+  PassManagerBuilder PMB;
+  PMB.LoopVectorize = false;
+  PMB.SLPVectorize = false;
+  PMB.OptLevel = options::OptLevel;
+  PMB.Inliner = createFunctionInliningPass(100);
+  PMB.populateLTOPassManager(Passes);
   PNaClABISimplifyAddPostOptPasses(&TheTriple, Passes);
 
   if (options::MinSFI)
     MinSFIPasses(Passes);
 
   if (options::Finalize) {
-    Passes.add(createStripSymbolsPass());
+    Passes.add(createStripSymbolsPass(false));
     Passes.add(createStripMetadataPass());
     Passes.add(createStripModuleFlagsPass());
   }
 
   Passes.add(createVerifierPass());
 
+  PNaClABIErrorReporter Reporter;
+
+  if (!options::Finalize)
+    PNaClABIAllowDebugMetadata = true;
+
+  if (options::ABIVerify) {
+    Passes.add(createPNaClABIVerifyModulePass(&Reporter));
+    Passes.add(createPNaClABIVerifyFunctionsPass(&Reporter));
+  }
+  
   Passes.run(M);
+
+  if (options::ABIVerify && Reporter.getErrorCount() > 0) {
+    std::string Errors;
+    raw_string_ostream OS(Errors);
+    Reporter.printErrors(OS);
+    message(LDPL_FATAL, OS.str().c_str());
+  }
 }
 // @LOCALMOD-END
 
@@ -835,7 +867,7 @@ static void saveBCFile(StringRef Path, Module &M) {
     if (options::Finalize)
       NaClWriteBitcodeToFile(&M, OS, /* AcceptSupportedOnly */ true);
     else
-      WriteBitcodeToFile(&M, OS, /* ShouldPreserveUseListOrder */ true);
+      WriteBitcodeToFile(&M, OS, /* ShouldPreserveUseListOrder */ false);
   } else
 // @LOCALMOD-END
   WriteBitcodeToFile(&M, OS, /* ShouldPreserveUseListOrder */ true);
