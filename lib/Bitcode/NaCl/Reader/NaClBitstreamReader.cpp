@@ -49,8 +49,7 @@ Fatal(const std::string &ErrorMessage) const {
   // the error occurred.
   std::string Buffer;
   raw_string_ostream StrBuf(Buffer);
-  naclbitc::ErrorAt(StrBuf, naclbitc::Fatal, Cursor.GetCurrentBitNo())
-      << ErrorMessage;
+  naclbitc::ErrorAt(StrBuf, naclbitc::Fatal, getCurrentBitNo()) << ErrorMessage;
   report_fatal_error(StrBuf.str());
 }
 
@@ -74,8 +73,7 @@ bool NaClBitstreamCursor::EnterSubBlock(unsigned BlockID, unsigned *NumWordsP) {
   const bool IsFixed = true;
   NaClBitcodeSelectorAbbrev
       CodeAbbrev(IsFixed, ReadVBR(naclbitc::CodeLenWidth));
-  BlockScope.push_back(Block(&BitStream->getOrCreateBlockInfo(BlockID),
-                             CodeAbbrev));
+  BlockScope.push_back(Block(&BitStream->getBlockInfo(BlockID), CodeAbbrev));
   SkipToFourByteBoundary();
   unsigned NumWords = Read(naclbitc::BlockSizeWidth);
   if (NumWordsP) *NumWordsP = NumWords;
@@ -330,13 +328,45 @@ void NaClBitstreamCursor::SkipAbbrevRecord() {
   SkipToByteBoundaryIfAligned();
 }
 
+namespace {
+
+unsigned ValidBlockIDs[] = {
+  naclbitc::BLOCKINFO_BLOCK_ID,
+  naclbitc::CONSTANTS_BLOCK_ID,
+  naclbitc::FUNCTION_BLOCK_ID,
+  naclbitc::GLOBALVAR_BLOCK_ID,
+  naclbitc::MODULE_BLOCK_ID,
+  naclbitc::TOP_LEVEL_BLOCKID,
+  naclbitc::TYPE_BLOCK_ID_NEW,
+  naclbitc::VALUE_SYMTAB_BLOCK_ID
+};
+
+} // end of anonymous namespace
+
+NaClBitstreamReader::BlockInfoRecordsMap::
+BlockInfoRecordsMap() : IsFrozen(false) {
+  for (size_t BlockID : ValidBlockIDs)
+    Infos.emplace(BlockID, BlockInfo(BlockID));
+}
+
+NaClBitstreamReader::BlockInfoRecordsMap::UpdateLock::
+UpdateLock(BlockInfoRecordsMap &BlockInfoRecords)
+    : BlockInfoRecords(BlockInfoRecords), Lock(BlockInfoRecords.Lock)
+{}
+
+NaClBitstreamReader::BlockInfoRecordsMap::UpdateLock::
+~UpdateLock() {
+  if (BlockInfoRecords.freeze())
+    report_fatal_error("Global abbreviations block frozen while building.");
+}
+
 bool NaClBitstreamCursor::ReadBlockInfoBlock(NaClAbbrevListener *Listener) {
-  // If this is the second stream to get to the block info block, skip it.
-  if (BitStream->HasReadBlockInfoBlock)
+  // If this is the second read of the block info block, skip it.
+  if (BitStream->BlockInfoRecords->isFrozen())
     return SkipBlock();
 
-  BitStream->HasReadBlockInfoBlock = true;
-
+  NaClBitstreamReader::BlockInfoRecordsMap::UpdateLock
+      Lock(*BitStream->BlockInfoRecords);
   unsigned NumWords;
   if (EnterSubBlock(naclbitc::BLOCKINFO_BLOCK_ID, &NumWords)) return true;
 
@@ -387,7 +417,7 @@ bool NaClBitstreamCursor::ReadBlockInfoBlock(NaClAbbrevListener *Listener) {
         if (Record.size() < 1) return true;
         FoundSetBID = true;
         UpdateAbbrevs =
-            &BitStream->getOrCreateBlockInfo((unsigned)Record[0]).getAbbrevs();
+            &BitStream->getBlockInfo((unsigned)Record[0]).getAbbrevs();
         if (Listener) {
           Listener->Values = Record;
           Listener->SetBID();

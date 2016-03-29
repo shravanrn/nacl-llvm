@@ -21,7 +21,10 @@
 #include "llvm/Bitcode/NaCl/NaClLLVMBitCodes.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/StreamingMemoryObject.h"
+#include <atomic>
 #include <climits>
+#include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace llvm {
@@ -130,15 +133,85 @@ public:
     AbbrevList Abbrevs;
   };
 
+  // Holds the global abbreviations in the BlockInfo block of the bitcode file.
+  // Sharing is used to allow parallel parses. Share by using std::share_ptr's
+  // and std::shared_from_this().
+  //
+  // Note: The BlockInfo block must be parsed before sharing of the
+  // BlockInfoRecordsMap.  Therefore, before changing to a parallel parse, the
+  // BlockInfoRecordsMap must be frozen.  Failure to do so, can lead to
+  // unexpected behaviour.
+  //
+  // In practice, this means that only function blocks can be parsed in
+  // parallel.
+  class BlockInfoRecordsMap :
+      public std::enable_shared_from_this<BlockInfoRecordsMap> {
+    friend class NaClBitstreamReader;
+    BlockInfoRecordsMap(const BlockInfoRecordsMap&) = delete;
+    BlockInfoRecordsMap &operator=(const BlockInfoRecordsMap&) = delete;
+  public:
+    using InfosMap = std::unordered_map<unsigned, BlockInfo>;
+
+    static std::shared_ptr<BlockInfoRecordsMap> create() {
+      return std::shared_ptr<BlockInfoRecordsMap>(new BlockInfoRecordsMap());
+    }
+    ~BlockInfoRecordsMap() = default;
+
+    bool isFrozen() const {
+      return IsFrozen.load();
+    }
+
+    // Returns true if already frozen.
+    bool freeze() {
+      return IsFrozen.exchange(true);
+    }
+
+    BlockInfo &getBlockInfo(unsigned BlockID) {
+      auto Pos = Infos.find(BlockID);
+      if (Pos != Infos.end())
+        return Pos->second;
+      report_fatal_error("Invalid block ID: " + std::to_string(BlockID));
+    }
+
+    // Locks the BlockInfoRecordsMap for the lifetime of the UpdateLock.  Used
+    // to allow the parsing of a BlockInfo block, and install global
+    // abbreviations.
+    //
+    // Verifies that the BlockInfoRecordsMap didn't get frozen during the
+    // instance's lifetime as a safety precaution. That is, it checks that no
+    // bitstream reader was created to share the global abbreviations before the
+    // global abbreviations are defined.
+    class UpdateLock {
+      UpdateLock() = delete;
+      UpdateLock &operator=(const UpdateLock&) = delete;
+    public:
+      explicit UpdateLock(BlockInfoRecordsMap &BlockInfoRecords);
+      ~UpdateLock();
+    private:
+      // The BlockInfoRecordsMap to update.
+      BlockInfoRecordsMap &BlockInfoRecords;
+      // The locked mutex from BlockInfoRecordsMap;
+      std::unique_lock<std::mutex> Lock;
+    };
+
+  private:
+    // The set of known BlockInfo's.
+    InfosMap Infos;
+    // True if the known BlockInfo blocks are frozen (i.e. the bitstream reader
+    // will ignore the BlockInfo block).
+    std::atomic_bool IsFrozen;
+    // Lock to use to update this data structure.
+    std::mutex Lock;
+
+    BlockInfoRecordsMap();
+  };
+
 private:
   friend class NaClBitstreamCursor;
 
   std::unique_ptr<MemoryObject> BitcodeBytes;
 
-  std::vector<BlockInfo> BlockInfoRecords;
-
-  // True if the BlockInfo block has been read.
-  bool HasReadBlockInfoBlock = false;
+  std::shared_ptr<BlockInfoRecordsMap> BlockInfoRecords;
 
   /// \brief Holds the offset of the first byte after the header.
   size_t InitialAddress;
@@ -159,21 +232,32 @@ public:
   /// the given bitcode header.
   NaClBitstreamReader(const unsigned char *Start, const unsigned char *End,
                       NaClBitcodeHeader &Header)
-      : BitcodeBytes(getNonStreamedMemoryObject(Start, End)) {
+      : BitcodeBytes(getNonStreamedMemoryObject(Start, End)),
+        BlockInfoRecords(BlockInfoRecordsMap::create()) {
     initFromHeader(Header);
   }
 
   /// Read stream from Bytes, after parsing the given bitcode header.
   NaClBitstreamReader(MemoryObject *Bytes, NaClBitcodeHeader &Header)
-      : BitcodeBytes(Bytes) {
+      : BitcodeBytes(Bytes), BlockInfoRecords(BlockInfoRecordsMap::create()) {
     initFromHeader(Header);
   }
 
   /// Read stream from bytes, starting at the given initial address.
   /// Provides simple API for unit testing.
   NaClBitstreamReader(MemoryObject *Bytes, size_t InitialAddress)
-      : BitcodeBytes(Bytes), InitialAddress(InitialAddress) {
+      : BitcodeBytes(Bytes), BlockInfoRecords(BlockInfoRecordsMap::create()),
+        InitialAddress(InitialAddress) {
   }
+
+  /// Read stream from sequence of bytes [Start .. End), using the global
+  /// abbreviations of the given bitstream reader. Assumes that [Start .. End)
+  /// is copied from Reader's memory object.
+  NaClBitstreamReader(const unsigned char *Start,
+                      const unsigned char *End, NaClBitstreamReader *Reader)
+      : BitcodeBytes(getNonStreamedMemoryObject(Start, End)),
+        BlockInfoRecords(Reader->BlockInfoRecords), InitialAddress(0)
+  { BlockInfoRecords->freeze(); }
 
   // Returns the memory object that is being read.
   MemoryObject &getBitcodeBytes() { return *BitcodeBytes; }
@@ -189,28 +273,8 @@ public:
   // Block Manipulation
   //===--------------------------------------------------------------------===//
 
-  /// If there is block info for the specified ID, return it, otherwise return
-  /// null.
-  const BlockInfo *getBlockInfo(unsigned BlockID) const {
-    // Common case, the most recent entry matches BlockID.
-    if (!BlockInfoRecords.empty() &&
-        BlockInfoRecords.back().getBlockID() == BlockID)
-      return &BlockInfoRecords.back();
-
-    for (unsigned i = 0, e = static_cast<unsigned>(BlockInfoRecords.size());
-         i != e; ++i)
-      if (BlockInfoRecords[i].getBlockID() == BlockID)
-        return &BlockInfoRecords[i];
-    return nullptr;
-  }
-
-  BlockInfo &getOrCreateBlockInfo(unsigned BlockID) {
-    if (const BlockInfo *BI = getBlockInfo(BlockID))
-      return *const_cast<BlockInfo*>(BI);
-
-    // Otherwise, add a new record.
-    BlockInfoRecords.push_back(BlockInfo(BlockID));
-    return BlockInfoRecords.back();
+  BlockInfo &getBlockInfo(unsigned BlockID) {
+    return BlockInfoRecords->getBlockInfo(BlockID);
   }
 };
 
@@ -413,7 +477,7 @@ public:
     BitsInCurWord = 0;
     if (BitStream) {
       BlockScope.push_back(
-          Block(&BitStream->getOrCreateBlockInfo(naclbitc::TOP_LEVEL_BLOCKID)));
+          Block(&BitStream->getBlockInfo(naclbitc::TOP_LEVEL_BLOCKID)));
     }
   }
 
@@ -523,10 +587,35 @@ public:
     }
   }
 
+  /// Returns the starting byte of the word containing BitNo.
+  uintptr_t getStartWordByteForBit(uint64_t BitNo) const {
+    return uintptr_t(BitNo/8) & ~(sizeof(word_t)-1);
+  }
+
+  /// Returns the index of BitNo within the word it appears in.
+  unsigned getWordBitNo(uint64_t BitNo) const {
+    return unsigned(BitNo & (sizeof(word_t)*8-1));
+  }
+
+  /// Returns the ending byte of the word containing BitNo.
+  uintptr_t getEndWordByteForBit(uint64_t BitNo) const {
+    return getStartWordByteForBit(BitNo) +
+        (getWordBitNo(BitNo)
+         ? sizeof(word_t)
+         : 0);
+  }
+
+  /// Fills Buffer[Size] using bytes at Address (in the memory object being
+  /// read). Returns number of bytes filled (less than Size if at end of memory
+  /// object).
+  uint64_t fillBuffer(uint8_t *Buffer, size_t Size, size_t Address) const {
+    return BitStream->getBitcodeBytes().readBytes(Buffer, Size, Address);
+  }
+
   /// Reset the stream to the specified bit number.
   void JumpToBit(uint64_t BitNo) {
-    uintptr_t ByteNo = uintptr_t(BitNo/8) & ~(sizeof(word_t)-1);
-    unsigned WordBitNo = unsigned(BitNo & (sizeof(word_t)*8-1));
+    uintptr_t ByteNo = getStartWordByteForBit(BitNo);
+    unsigned WordBitNo = getWordBitNo(BitNo);
     if (!canSkipToPos(ByteNo))
       reportInvalidJumpToBit(BitNo);
 
@@ -545,8 +634,7 @@ public:
     // Read the next word from the stream.
     uint8_t Array[sizeof(word_t)] = {0};
 
-    uint64_t BytesRead =
-        BitStream->getBitcodeBytes().readBytes(Array, sizeof(Array), NextChar);
+    uint64_t BytesRead = fillBuffer(Array, sizeof(Array), NextChar);
 
     // If we run out of data, stop at the end of the stream.
     if (BytesRead == 0) {
