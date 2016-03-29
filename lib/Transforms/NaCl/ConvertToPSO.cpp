@@ -62,6 +62,13 @@ namespace {
   // increment TOOLCHAIN_FEATURE_VERSION instead.
   const int PSOFormatVersion = 2;
 
+  // Command line arguments consist of a list of PLL dependencies.
+  static cl::list<std::string>
+  LibraryDependencies("convert-to-pso-deps",
+                      cl::CommaSeparated,
+                      cl::desc("The dependencies of the PLL being built"),
+                      cl::value_desc("PLL to list as dependency"));
+
   // This is a ModulePass because it inherently operates on a whole module.
   class ConvertToPSO : public ModulePass {
   public:
@@ -651,6 +658,18 @@ bool ConvertToPSO::runOnModule(Module &M) {
       M, StringTableArray->getType(), true, GlobalValue::InternalLinkage,
       StringTableArray, "string_table");
 
+  // Set up string of PLL dependencies.
+  SmallString<1024> DependenciesList;
+  for (auto dependency : LibraryDependencies) {
+    DependenciesList.append(dependency);
+    DependenciesList.push_back(0);
+  }
+  Constant *DependenciesListArray = ConstantDataArray::getString(
+      C, StringRef(DependenciesList.data(), DependenciesList.size()), false);
+  Constant *DependenciesListVar = new GlobalVariable(
+      M, DependenciesListArray->getType(), true, GlobalValue::InternalLinkage,
+      DependenciesListArray, "dependencies_list");
+
   SmallVector<Constant *, 32> PsoRoot = {
     ConstantInt::get(IntPtrType, PSOFormatVersion),
 
@@ -679,6 +698,11 @@ bool ConvertToPSO::runOnModule(Module &M) {
   };
   for (auto FieldVal : PsoRootTlsFields)
     PsoRoot.push_back(FieldVal);
+
+  // Dependencies List
+  PsoRoot.push_back(ConstantInt::get(IntPtrType, LibraryDependencies.size()));
+  PsoRoot.push_back(DependenciesListVar);
+
   Constant *PsoRootConst = ConstantStruct::getAnon(PsoRoot);
   new GlobalVariable(
       M, PsoRootConst->getType(), true, GlobalValue::ExternalLinkage,

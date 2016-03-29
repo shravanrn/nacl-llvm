@@ -1,6 +1,7 @@
 ; This tests that the output of "-convert-to-pso" passes PNaCl's ABI verifier.
-; RUN: opt < %s -convert-to-pso -pnacl-abi-simplify-postopt \
-; RUN:     -verify-pnaclabi-module -verify-pnaclabi-functions -S | FileCheck %s
+; RUN: opt < %s -convert-to-pso -convert-to-pso-deps=libfoo.so,libbar.so \
+; RUN:     -pnacl-abi-simplify-postopt -verify-pnaclabi-module \
+; RUN:     -verify-pnaclabi-functions -S | FileCheck %s
 
 target datalayout = "p:32:32:32"
 
