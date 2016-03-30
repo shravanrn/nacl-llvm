@@ -2880,8 +2880,11 @@ void NaClDisFunctionParser::ProcessRecord() {
     Tokens() << "blocks" << Space() << ExpectedNumBbs << Semicolon();
     break;
   case naclbitc::FUNC_CODE_INST_BINOP: {
-    // BINOP: [opval, opval, opcode]
-    if (Values.size() != 3) {
+    // Note: Old bitcode files may have an additional 'flags' operand, which is
+    // ignored.
+    //
+    // BINOP: [opval, opval, opcode [,flags]]
+    if (Values.size() != 3 && Values.size() != 4) {
       Errors() << "Binop record expects 3 arguments. Found: "
                << Values.size() << "\n";
       break;

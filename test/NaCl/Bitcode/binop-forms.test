@@ -1,0 +1,30 @@
+; Test if we recognize both the old and the new forms of a binary instruction
+; in pnacl-bcdis.
+
+; Checks that the new form of binary add (without flags argument) works.
+; RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/binop-newform.tbc  -output - \
+; RUN:   | pnacl-bcdis -no-records | FileCheck %s
+
+; Checks that the old form of binary add (with flags argument) works.
+; RUN: pnacl-bcfuzz -bitcode-as-text %p/Inputs/binop-oldform.tbc  -output - \
+; RUN:   | pnacl-bcdis -no-records | FileCheck %s
+
+; CHECK:      module {  // BlockID = 8
+; CHECK-NEXT:   version 1;
+; CHECK-NEXT:   types {  // BlockID = 17
+; CHECK-NEXT:     count 3;
+; CHECK-NEXT:     @t0 = i32;
+; CHECK-NEXT:     @t1 = i32 (i32, i32);
+; CHECK-NEXT:     @t2 = void;
+; CHECK-NEXT:   }
+; CHECK-NEXT:   define internal i32 @f0(i32, i32);
+; CHECK-NEXT:   globals {  // BlockID = 19
+; CHECK-NEXT:     count 0;
+; CHECK-NEXT:   }
+; CHECK-NEXT:   function i32 @f0(i32 %p0, i32 %p1) {  // BlockID = 12
+; CHECK-NEXT:     blocks 1;
+; CHECK-NEXT:   %b0:
+; CHECK-NEXT:     %v0 = add i32 %p0, %p1;
+; CHECK-NEXT:     ret i32 %v0;
+; CHECK-NEXT:   }
+; CHECK-NEXT: }
