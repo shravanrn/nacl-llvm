@@ -229,6 +229,10 @@ private:
   /// \brief Holds the offset of the first byte after the header.
   size_t InitialAddress;
 
+  // Holds the number of bytes to add to the bitcode position, when reporting
+  // errors. Useful when using parallel parses of function blocks.
+  size_t ErrorOffset = 0;
+
   // True if filler should be added to byte align records.
   bool AlignBitcodeRecords = false;
   NaClBitstreamReader(const NaClBitstreamReader&) = delete;
@@ -252,25 +256,23 @@ public:
 
   /// Read stream from Bytes, after parsing the given bitcode header.
   NaClBitstreamReader(MemoryObject *Bytes, NaClBitcodeHeader &Header)
-      : BitcodeBytes(Bytes), BlockInfoRecords(BlockInfoRecordsMap::create()) {
-    initFromHeader(Header);
-  }
+      : BitcodeBytes(Bytes), BlockInfoRecords(BlockInfoRecordsMap::create())
+  { initFromHeader(Header); }
 
   /// Read stream from bytes, starting at the given initial address.
   /// Provides simple API for unit testing.
   NaClBitstreamReader(MemoryObject *Bytes, size_t InitialAddress)
       : BitcodeBytes(Bytes), BlockInfoRecords(BlockInfoRecordsMap::create()),
-        InitialAddress(InitialAddress) {
-  }
+        InitialAddress(InitialAddress) {}
 
   /// Read stream from sequence of bytes [Start .. End), using the global
   /// abbreviations of the given bitstream reader. Assumes that [Start .. End)
   /// is copied from Reader's memory object.
-  NaClBitstreamReader(const unsigned char *Start,
+  NaClBitstreamReader(size_t StartAddress, const unsigned char *Start,
                       const unsigned char *End, NaClBitstreamReader *Reader)
       : BitcodeBytes(getNonStreamedMemoryObject(Start, End)),
-        BlockInfoRecords(Reader->BlockInfoRecords), InitialAddress(0)
-  { BlockInfoRecords->freeze(); }
+        BlockInfoRecords(Reader->BlockInfoRecords), InitialAddress(0),
+        ErrorOffset(StartAddress) { BlockInfoRecords->freeze(); }
 
   // Returns the memory object that is being read.
   MemoryObject &getBitcodeBytes() { return *BitcodeBytes; }
@@ -281,6 +283,10 @@ public:
   size_t getInitialAddress() const {
     return InitialAddress;
   }
+
+  /// Returns the byte address of the first byte in the bitstream. Used
+  /// for error reporting.
+  size_t getErrorOffset() const { return ErrorOffset; }
 
   //===--------------------------------------------------------------------===//
   // Block Manipulation
@@ -533,6 +539,16 @@ public:
   /// Return the bit # of the bit we are reading.
   uint64_t GetCurrentBitNo() const {
     return NextChar*CHAR_BIT - BitsInCurWord;
+  }
+
+  /// Converts the given position into the corresponding Error position.
+  uint64_t getErrorBitNo(uint64_t Position) const {
+    return BitStream->getErrorOffset() * CHAR_BIT + Position;
+  }
+
+  /// Returns the current bit address for reporting errors.
+  uint64_t getErrorBitNo() const {
+    return getErrorBitNo(GetCurrentBitNo());
   }
 
   NaClBitstreamReader *getBitStreamReader() {

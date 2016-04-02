@@ -49,7 +49,8 @@ Fatal(const std::string &ErrorMessage) const {
   // the error occurred.
   std::string Buffer;
   raw_string_ostream StrBuf(Buffer);
-  naclbitc::ErrorAt(StrBuf, naclbitc::Fatal, getCurrentBitNo()) << ErrorMessage;
+  naclbitc::ErrorAt(StrBuf, naclbitc::Fatal,
+                    Cursor.getErrorBitNo(getCurrentBitNo())) << ErrorMessage;
   report_fatal_error(StrBuf.str());
 }
 
