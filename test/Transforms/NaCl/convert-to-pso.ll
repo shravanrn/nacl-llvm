@@ -39,6 +39,7 @@ define i8* @my_read_tp() {
 @imported_var_addend = external global i32
 @imported_var2 = external global i32
 @imported_var3 = external global i32
+@imported_var_tls = external thread_local global i32
 
 ; Test that an import is replaced with an addend.  Here, the addend is zero.
 @reloc_var = global i32* @imported_var
@@ -116,3 +117,14 @@ define i32* @get_imported_var_addend() {
 ; CHECK-NEXT: %imported_var_addend = load i32, i32* %gep.asptr
 ; CHECK-NEXT: %gep4 = add i32 %imported_var_addend, 4
 ; CHECK-NEXT: ret i32 %gep4
+
+define i32* @get_imported_var_tls() {
+  ret i32* @imported_var_tls
+}
+; CHECK: define internal i32 @get_imported_var_tls() {
+; CHECK-NEXT: %import_tls_getter_array.bc = bitcast {{.*}} @import_tls_getter_array to i32*
+; CHECK-NEXT: %imported_var_tls.tls_imported_getter_func = load i32, i32* %import_tls_getter_array.bc, align 1
+; CHECK-NEXT: %imported_var_tls.tls_imported_getter_func.asptr = inttoptr i32 %imported_var_tls.tls_imported_getter_func to i32 (i32)*
+; CHECK-NEXT: %expanded1 = ptrtoint {{.*}} @import_tls_getter_array to i32
+; CHECK-NEXT: %imported_var_tls = call i32 %imported_var_tls.tls_imported_getter_func.asptr(i32 %expanded1)
+; CHECK-NEXT: ret i32 %imported_var_tls

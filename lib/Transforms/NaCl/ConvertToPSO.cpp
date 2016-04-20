@@ -28,10 +28,10 @@
 //     * when referenced by functions
 //  * Building a hash table of exported symbols to allow O(1)-time lookup
 //  * Support for thread-local variables (module-local use only)
+//  * Support for exporting and importing thread-local variables
 //
 // The following features are not implemented yet:
 //
-//  * Support for exporting and importing thread-local variables
 //  * Support for lazy binding (i.e. lazy symbol resolution)
 //
 //===----------------------------------------------------------------------===//
@@ -90,9 +90,10 @@ namespace {
 
   class SymbolTableEntry {
   public:
-    SymbolTableEntry(Constant *Val) :
-      Value(Val), Hash(hashString(Value->getName())) {}
+    SymbolTableEntry(StringRef Name, Constant *Val) :
+        Name(Name.data()), Value(Val), Hash(hashString(Name)) {}
 
+    std::string Name;
     Constant *Value;
     uint32_t Hash;
   };
@@ -234,7 +235,20 @@ namespace {
     }
   }
 
-  // handleTlsVars() handles within-module references to thread-local (TLS)
+  // Add a symbol to a specified StringTable, as well as a vector tracking
+  // indices into the StringTable (and corresponding values).
+  void addToStringTable(SmallVectorImpl<char> *StringTable, Type *IntPtrType,
+                        SmallVectorImpl<Constant *> *NameOffsets,
+                        const StringRef Name) {
+    // Identify the offset in the StringTable that will contain the symbol name.
+    NameOffsets->push_back(ConstantInt::get(IntPtrType, StringTable->size()));
+
+    // Copy the name into the string table, along with the null terminator.
+    StringTable->append(Name.begin(), Name.end());
+    StringTable->push_back(0);
+  }
+
+  // handleLocalTlsVars() handles within-module references to thread-local (TLS)
   // variables -- i.e. references to TLS variables that are defined within
   // the module.
   //
@@ -263,8 +277,15 @@ namespace {
   // where OFFSET_FOR_TLS_VAR is a constant that is inlined into the code.
   //
   // Note that we only need one instance of TLSBlockGetter in the module.
-  void handleTlsVars(Module &M, Type *IntPtrType,
-                     SmallVectorImpl<TrackingVH<Constant>> *PsoRootTlsFields) {
+  //
+  // Exported TLS variables are added to the list of exported symbols (which are
+  // processed later in the ConvertToPSO pass), and exported as the offset from
+  // the base of the TLS block for a given module. This information is used by
+  // the dynamic linker when resolving symbols.
+  void handleLocalTlsVars(
+      Module &M, SmallVectorImpl<char> *StringTable, Type *PtrType,
+      Type *IntPtrType, SmallVectorImpl<TrackingVH<Constant>> *PsoRootTlsFields,
+      SmallVectorImpl<SymbolTableEntry> *ExportedSymbolTableVector) {
     TlsTemplate Templ;
     buildTlsTemplate(M, &Templ);
 
@@ -323,8 +344,141 @@ namespace {
                                       Var->getName() + ".ptr", InsertPt);
         PhiSafeReplaceUses(U, Ptr);
       }
+
+      // For exported TLS variables, only export a constant offset from the base
+      // of the TLS block. This information can be processed by the dynamic
+      // linker to find the actual thread-local symbol at runtime.
+      // We explicitly copy Var's name into the ExportedSymbolTable since
+      // Constants cannot have names in LLVM.
+      if (Var->getLinkage() == GlobalValue::ExternalLinkage) {
+        Constant *ExportOffset =
+            Constant::getIntegerValue(PtrType, APInt(32, VarInfo.Offset));
+        ExportedSymbolTableVector->push_back(SymbolTableEntry(Var->getName(),
+                                                              ExportOffset));
+      }
       Var->eraseFromParent();
     }
+  }
+
+  // handleImportedTlsVars() handles references to extern thread-local (TLS)
+  // variables -- i.e. references to TLS variables that are defined in other
+  // modules.
+  //
+  // Suppose we have the following access to a TLS variable:
+  //
+  //   extern __thread int tls_var_extern;
+  //
+  //   int *get_var() {
+  //     return &tls_var_extern;
+  //   }
+  //
+  // We transform that code to the equivalent of this:
+  //
+  //   struct TLSVarGetter {
+  //     // Returns pointer to the module's TLS block for the current thread.
+  //     void *(*func)(struct TLSVarGetter *closure);
+  //     // The dynamic linker can use "arg1" to store an ID for the module.
+  //     uintptr_t arg1;
+  //     // The dynamic linker can use "arg2" to store the offset of the
+  //     // variable in the module's TLS block.
+  //     uintptr_t arg2;
+  //   } __tls_var_extern;
+  //
+  //   int *get_var() {
+  //     return __tls_var_extern.func(&__tls_var_extern);
+  //   }
+  //
+  // All references to the imported TLS variable are replaced with a
+  // "TLSVarGetter" closure, which is filled in by the dynamic linker so that it
+  // can return the actual address of the imported variable at runtime.
+  //
+  // Note that we need one instance of TLSVarGetter per extern TLS variable in
+  // the module.
+  void handleImportedTlsVars(
+      Module &M, SmallVectorImpl<char> *StringTable, Type *PtrType,
+      Type *IntPtrType,
+      SmallVectorImpl<TrackingVH<Constant>> *PsoRootTlsFields) {
+    StructType *TLSVarClosureType =
+        StructType::create(M.getContext(), "TLSVarGetter");
+    Type *TLSVarClosureArgs[] = { TLSVarClosureType->getPointerTo() };
+    FunctionType *TLSVarClosureFuncType = FunctionType::get(
+          IntPtrType, TLSVarClosureArgs, /*isVarArg=*/false);
+    Type *TLSVarClosureTypeFields[] = {
+      TLSVarClosureFuncType->getPointerTo(),
+      IntPtrType,
+      IntPtrType,
+    };
+    TLSVarClosureType->setBody(TLSVarClosureTypeFields);
+
+    // Imported TLS GlobalVariables are stored separately, since the number of
+    // imported TLS variables must be calculated for ImportTLSArrayType, and the
+    // intermediate vector can prevent re-iterating over all globals.
+    std::vector<GlobalVariable *> ImportedTLSVars;
+    for (GlobalVariable &Var : M.globals()) {
+      if (Var.isThreadLocal() && !Var.hasInitializer()) {
+        ImportedTLSVars.push_back(&Var);
+      }
+    }
+
+    // Create a TLSVarClosure for each imported TLS variable.
+    // These imported TLS variables will not exist in the structure returned
+    // from "buildTlsTemplate", since they do not have initializers.
+    ArrayType *ImportTLSArrayType =
+        ArrayType::get(TLSVarClosureType, ImportedTLSVars.size());
+    GlobalVariable *ImportTLSArray = new GlobalVariable(
+        M, ImportTLSArrayType, false, GlobalValue::InternalLinkage,
+        Constant::getNullValue(ImportTLSArrayType), "import_tls_getter_array");
+    SmallVector<Constant *, 32> ImportTLSNames;
+
+    for (GlobalVariable *Var : ImportedTLSVars) {
+      // Delete unused ConstantExprs that reference Var, because the code
+      // that follows assumes none remain.  ExpandConstantExprPass is one
+      // pass that is known to leave dead ConstantExprs behind, but other
+      // passes might too.
+      Var->removeDeadConstantUsers();
+
+      while (!Var->use_empty()) {
+        // For each use of the imported TLS variable, replace it with function
+        // call to the TLSVarGetter closure.
+        Use *U = &*Var->use_begin();
+        Instruction *InsertPt = PhiSafeInsertPt(U);
+
+        // ImportedValue = imported_tls_var_desc.getter(&imported_tls_var_desc);
+        Value *ArrayIndexes[] = {
+          ConstantInt::get(M.getContext(), APInt(32, 0)),
+          ConstantInt::get(M.getContext(), APInt(32, ImportTLSNames.size())),
+        };
+        Value *TLSVarClosure = GetElementPtrInst::Create(
+            ImportTLSArrayType, ImportTLSArray, ArrayIndexes,
+            Var->getName() + ".tls_imported_array_access", InsertPt);
+        Value *StructIndexes[] = {
+          ConstantInt::get(M.getContext(), APInt(32, 0)),
+          ConstantInt::get(M.getContext(), APInt(32, 0)),
+        };
+        Value *FuncField = GetElementPtrInst::Create(
+            TLSVarClosureType, TLSVarClosure, StructIndexes,
+            Var->getName() + ".tls_imported_struct_access", InsertPt);
+        Value *CallArgs[] = { TLSVarClosure };
+        Value *Func = new LoadInst(FuncField,
+                                   Var->getName() + ".tls_imported_getter_func",
+                                   InsertPt);
+        Value *ImportedValue = CallInst::Create(Func, CallArgs, Var->getName(),
+                                                InsertPt);
+        Value *Ptr = new IntToPtrInst(ImportedValue, Var->getType(),
+                                      Var->getName() + ".ptr", InsertPt);
+        PhiSafeReplaceUses(U, Ptr);
+      }
+      // Add the imported TLS variable name to the symbol table.
+      addToStringTable(StringTable, IntPtrType, &ImportTLSNames,
+                       Var->getName());
+      Var->eraseFromParent();
+    }
+
+    PsoRootTlsFields->push_back(ImportTLSArray);
+    PsoRootTlsFields->push_back(
+        createArray(M, "import_tls_names", &ImportTLSNames, IntPtrType)),
+    PsoRootTlsFields->push_back(
+        ConstantInt::get(IntPtrType, ImportedTLSVars.size()));
   }
 }
 
@@ -350,16 +504,12 @@ bool ConvertToPSO::runOnModule(Module &M) {
     ConstExprPass->runOnFunction(Func);
   delete ConstExprPass;
 
-  // We need to wrap these Constants with TrackingVH<> because our later
-  // call to FlattenGlobals will recreate some of them with different
-  // types.
-  SmallVector<TrackingVH<Constant>, 5> PsoRootTlsFields;
-  handleTlsVars(M, IntPtrType, &PsoRootTlsFields);
-
-  buildGlobalsTable(M);
-
   // A table of strings which contains all imported and exported symbol names.
   SmallString<1024> StringTable;
+
+  // This acts roughly like the ".dynsym" section of an ELF file.
+  // It contains all symbols which will be exported.
+  SmallVector<SymbolTableEntry, 32> ExportedSymbolTableVector;
 
   // Enters the name of a symbol into the string table, and record
   // the index at which the symbol is stored in the list of names.
@@ -369,13 +519,21 @@ bool ConvertToPSO::runOnModule(Module &M) {
     // Identify the symbol's address (for exports) or the address which should
     // be updated to include the symbol (for imports).
     ValuePtrs->push_back(ConstantExpr::getBitCast(Addr, PtrType));
-    // Identify the offset in the StringTable that will contain the symbol name.
-    NameOffsets->push_back(ConstantInt::get(IntPtrType, StringTable.size()));
 
-    // Copy the name into the string table, along with the null terminator.
-    StringTable.append(Name);
-    StringTable.push_back(0);
+    addToStringTable(&StringTable, IntPtrType, NameOffsets, Name);
   };
+
+  // We need to wrap these Constants with TrackingVH<> because our later
+  // call to FlattenGlobals will recreate some of them with different
+  // types.
+  SmallVector<TrackingVH<Constant>, 5> PsoRootLocalTlsFields;
+  SmallVector<TrackingVH<Constant>, 3> PsoRootImportedTlsFields;
+  handleLocalTlsVars(M, &StringTable, PtrType, IntPtrType,
+                     &PsoRootLocalTlsFields, &ExportedSymbolTableVector);
+  handleImportedTlsVars(M, &StringTable, PtrType, IntPtrType,
+                        &PsoRootImportedTlsFields);
+
+  buildGlobalsTable(M);
 
   // In order to simplify the task of processing relocations inside
   // GlobalVariables' initializers, we first run the FlattenGlobals pass to
@@ -443,9 +601,6 @@ bool ConvertToPSO::runOnModule(Module &M) {
     }
   }
 
-  // This acts roughly like the ".dynsym" section of an ELF file.
-  SmallVector<SymbolTableEntry, 32> ExportedSymbolTableVector;
-
   // Process exports.
   SmallVector<Constant *, 32> ExportPtrs;
   // Indexes into the StringTable for the names of exported symbols.
@@ -469,7 +624,7 @@ bool ConvertToPSO::runOnModule(Module &M) {
       return;
 
     // Actually store the pointer to be exported.
-    ExportedSymbolTableVector.push_back(SymbolTableEntry(&GV));
+    ExportedSymbolTableVector.push_back(SymbolTableEntry(GV.getName(), &GV));
     GV.setLinkage(GlobalValue::InternalLinkage);
   };
 
@@ -644,8 +799,7 @@ bool ConvertToPSO::runOnModule(Module &M) {
       PrevBucketNum = BucketNum;
     }
 
-    createSymbol(&ExportNames, &ExportPtrs, Element->Value->getName(),
-                 Element->Value);
+    createSymbol(&ExportNames, &ExportPtrs, Element->Name, Element->Value);
   }
 
   // This lets us remove the "NumChainEntries" field from the PsoRoot.
@@ -696,12 +850,17 @@ bool ConvertToPSO::runOnModule(Module &M) {
     ConstantInt::get(IntPtrType, Shift2),
     createDataArray(M, "bloom_filter", &BloomFilter),
   };
-  for (auto FieldVal : PsoRootTlsFields)
+  for (auto FieldVal : PsoRootLocalTlsFields)
     PsoRoot.push_back(FieldVal);
 
   // Dependencies List
   PsoRoot.push_back(ConstantInt::get(IntPtrType, LibraryDependencies.size()));
   PsoRoot.push_back(DependenciesListVar);
+
+  // TODO(smklein): Combine both PsoRoots into "PsoRootTlsFields", and reorder
+  // fields within the PLL root.
+  for (auto FieldVal : PsoRootImportedTlsFields)
+    PsoRoot.push_back(FieldVal);
 
   Constant *PsoRootConst = ConstantStruct::getAnon(PsoRoot);
   new GlobalVariable(

@@ -134,23 +134,19 @@ void llvm::buildTlsTemplate(Module &M, TlsTemplate *Result) {
   };
 
   for (GlobalVariable &GV : M.globals()) {
-    if (GV.isThreadLocal()) {
-      if (!GV.hasInitializer()) {
-        // Since this is a whole-program transformation, "extern" TLS
-        // variables are not allowed at this point.
-        report_fatal_error(std::string("TLS variable without an initializer: ")
-                           + GV.getName());
-      }
-      if (!GV.getInitializer()->isNullValue())
-        addVarToTlsTemplate(&GV, /*IsBss=*/ false);
+    if (GV.isThreadLocal() && GV.hasInitializer() &&
+        !GV.getInitializer()->isNullValue()) {
+      addVarToTlsTemplate(&GV, /*IsBss=*/ false);
     }
   }
   Result->DataSize = CurrentOffset;
   // Handle zero-initialized TLS variables in a second pass, because
   // these should follow non-zero-initialized TLS variables.
   for (GlobalVariable &GV : M.globals()) {
-    if (GV.isThreadLocal() && GV.getInitializer()->isNullValue())
+    if (GV.isThreadLocal() && GV.hasInitializer() &&
+        GV.getInitializer()->isNullValue()) {
       addVarToTlsTemplate(&GV, /*IsBss=*/ true);
+    }
   }
   Result->TotalSize = CurrentOffset;
   Result->Alignment = OverallAlignment;
@@ -218,6 +214,12 @@ static void rewriteTlsVars(Module &M, std::vector<TlsVarInfo> *TlsVars) {
 
   for (TlsVarInfo &VarInfo : *TlsVars) {
     GlobalVariable *Var = VarInfo.TlsVar;
+    if (!Var->hasInitializer()) {
+      // Since this is a whole-program transformation, "extern" TLS variables
+      // are not allowed at this point.
+      report_fatal_error(std::string("TLS variable without an initializer: ") +
+                         Var->getName());
+    }
     while (!Var->use_empty()) {
       Use *U = &*Var->use_begin();
       Instruction *InsertPt = PhiSafeInsertPt(U);
