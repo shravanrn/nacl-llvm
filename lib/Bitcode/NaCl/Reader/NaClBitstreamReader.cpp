@@ -106,6 +106,7 @@ void NaClBitstreamCursor::skipAbbreviatedField(const NaClBitCodeAbbrevOp &Op) {
     (void)Read(6);
     break;
   }
+  llvm_unreachable("Illegal abbreviation encoding for field!");
 }
 
 /// skipRecord - Read the current record and discard it.
