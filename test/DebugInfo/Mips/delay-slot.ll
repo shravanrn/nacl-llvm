@@ -13,10 +13,9 @@
 ; CHECK: Address            Line   Column File   ISA Discriminator Flags
 ; CHECK: ------------------ ------ ------ ------ --- ------------- -------------
 ; CHECK: 0x0000000000000000      1      0      1   0             0  is_stmt
-; CHECK: 0x0000000000000000      1      0      1   0             0  is_stmt prologue_end
-; CHECK: 0x0000000000000008      2      0      1   0             0  is_stmt
-; CHECK: 0x0000000000000020      3      0      1   0             0  is_stmt
-; CHECK: 0x0000000000000030      4      0      1   0             0  is_stmt
+; CHECK: 0x000000000000000c      2      0      1   0             0  is_stmt prologue_end
+; CHECK: 0x0000000000000024      3      0      1   0             0  is_stmt
+; CHECK: 0x0000000000000034      4      0      1   0             0  is_stmt
 ; CHECK: 0x0000000000000040      5      0      1   0             0  is_stmt
 ; CHECK: 0x0000000000000050      5      0      1   0             0  is_stmt end_sequence
 
