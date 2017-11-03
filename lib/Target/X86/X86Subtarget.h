@@ -21,6 +21,7 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
+#include "llvm/NaClABI.h"
 #include <string>
 
 #define GET_SUBTARGETINFO_HEADER
@@ -310,18 +311,35 @@ public:
 
   /// Is this x86_64 with the ILP32 programming model (x32 ABI)?
   bool isTarget64BitILP32() const {
+    if(NaClDontBreakABI)
+    {
+      return In64BitMode && (TargetTriple.getEnvironment() == Triple::GNUX32);
+    }
+
     return In64BitMode && (TargetTriple.getEnvironment() == Triple::GNUX32 ||
                            TargetTriple.isOSNaCl());
   }
 
   /// Is this x86_64 with the LP64 programming model (standard AMD64, no x32)?
   bool isTarget64BitLP64() const {
+    if(NaClDontBreakABI)
+    {
+      return In64BitMode && (TargetTriple.getEnvironment() != Triple::GNUX32);
+    }
+
     return In64BitMode && (TargetTriple.getEnvironment() != Triple::GNUX32 &&
                            !TargetTriple.isOSNaCl());
   }
 
   // @LOCALMOD -- TODO(jvoung): try to use isTarget64BitLP64() instead.
-  bool has64BitPointers() const { return is64Bit() && !isTargetNaCl(); }
+  bool has64BitPointers() const { 
+    if(NaClDontBreakABI)
+    {
+      return is64Bit();
+    }
+
+    return is64Bit() && !isTargetNaCl(); 
+  }
 
   PICStyles::Style getPICStyle() const { return PICStyle; }
   void setPICStyle(PICStyles::Style Style)  { PICStyle = Style; }

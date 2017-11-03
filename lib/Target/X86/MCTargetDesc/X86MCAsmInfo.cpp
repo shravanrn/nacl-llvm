@@ -19,6 +19,7 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ELF.h"
+#include "llvm/NaClABI.h"
 using namespace llvm;
 
 enum AsmWriterFlavorTy {
@@ -98,6 +99,10 @@ X86ELFMCAsmInfo::X86ELFMCAsmInfo(const Triple &T) {
   // For x86-64 without the x32 ABI, pointer size is 8. For x86 and for x86-64
   // with the x32 ABI, pointer size remains the default 4.
   PointerSize = (is64Bit && !isX32 && !isNaCl) ? 8 : 4;
+  if(NaClDontBreakABI)
+  {
+    PointerSize = (is64Bit && !isX32) ? 8 : 4;
+  }
   // @LOCALMOD-END
 
   // OTOH, stack slot size is always 8 for x86-64, even with the x32 ABI.
