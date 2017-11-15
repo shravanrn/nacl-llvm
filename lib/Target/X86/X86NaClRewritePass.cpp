@@ -604,6 +604,17 @@ bool X86NaClRewritePass::ApplyRewrites(MachineBasicBlock &MBB,
   case X86::NACL_CG_TAILJMPd64   : NewOpc = X86::JMP_4; break;
   case X86::NACL_CG_CALL64pcrel32: NewOpc = X86::NACL_CALL64d; break;
   }
+
+  //If NACL is using 64 bit pointers, NACL_CG_CALL64pcrel32 is not selected for making calls to 64 bit locations
+  //In this case, the Inst Selection makes this a CALL64register instruction even though it has an immediate op
+  //We need to fix this
+  if(Opc == X86::CALL64r &&
+	  MI.getNumOperands() >= 0 &&
+	  (MI.getOperand(0).isGlobal() || MI.getOperand(0).isSymbol())
+  ){
+	NewOpc = X86::NACL_CALL64d;
+  }
+
   if (NewOpc) {
     BuildMI(MBB, MBBI, DL, TII->get(NewOpc))
       .addOperand(MI.getOperand(0));
