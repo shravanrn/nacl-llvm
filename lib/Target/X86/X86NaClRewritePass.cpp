@@ -439,6 +439,7 @@ bool X86NaClRewritePass::ApplyControlSFI(MachineBasicBlock &MBB,
   case X86::NACL_CG_JMP64r       : NewOpc = X86::NACL_JMP64r; break;
   case X86::CALL64r              : NewOpc = X86::NACL_CALL64r; break;
   case X86::TAILJMPr64           : NewOpc = X86::NACL_JMP64r; break;
+  case X86::JMP64r				 : NewOpc = X86::NACL_JMP64r; break;
   }
   if (NewOpc) {
     unsigned TargetReg = MI.getOperand(0).getReg();
