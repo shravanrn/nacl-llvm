@@ -604,6 +604,9 @@ bool X86NaClRewritePass::ApplyRewrites(MachineBasicBlock &MBB,
   case X86::TAILJMPd             : NewOpc = X86::JMP_4; break;
   case X86::NACL_CG_TAILJMPd64   : NewOpc = X86::JMP_4; break;
   case X86::NACL_CG_CALL64pcrel32: NewOpc = X86::NACL_CALL64d; break;
+
+  //If NACL is using 64 bit pointers, TAILJMPd64 is also chosen
+  case X86::TAILJMPd64           : NewOpc = X86::JMP_4; break;
   }
 
   //If NACL is using 64 bit pointers, NACL_CG_CALL64pcrel32 is not selected for making calls to 64 bit locations
