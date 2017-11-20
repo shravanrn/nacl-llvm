@@ -823,6 +823,8 @@ def IsPS4        : Predicate<"Subtarget->isTargetPS4()">;
 def NotPS4       : Predicate<"!Subtarget->isTargetPS4()">;
 def IsNaCl       : Predicate<"Subtarget->isTargetNaCl()">;
 def IsNotNaCl    : Predicate<"!Subtarget->isTargetNaCl()">;
+def IsNaClDontBreakABI : Predicate<"NaClDontBreakABI">;
+def IsNotNaClDontBreakABI : Predicate<"!NaClDontBreakABI">;
 def SmallCode    : Predicate<"TM.getCodeModel() == CodeModel::Small">;
 def KernelCode   : Predicate<"TM.getCodeModel() == CodeModel::Kernel">;
 def FarData      : Predicate<"TM.getCodeModel() != CodeModel::Small &&"

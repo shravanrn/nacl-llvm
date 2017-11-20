@@ -222,15 +222,25 @@ let Defs = [RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11,
             XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
             XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15, EFLAGS],
     Uses = [RSP] in {
+def NACL_CG_GD_TLS_addr64_sameabi : I<0, Pseudo, (outs), (ins i64mem:$sym), "",
+                                    [(X86tlsaddr tls64addr:$sym)]>,
+                                    Requires<[IsNaCl, In64BitMode, IsNaClDontBreakABI]>;
+def NACL_CG_LE_TLS_addr64_sameabi : I<0, Pseudo, (outs), (ins i64mem:$sym), "",
+                                    [(X86tlsaddr_le tls64addr:$sym)]>,
+                                    Requires<[IsNaCl, In64BitMode, IsNaClDontBreakABI]>;
+def NACL_CG_IE_TLS_addr64_sameabi : I<0, Pseudo, (outs), (ins i64mem:$sym), "",
+                                    [(X86tlsaddr_ie tls64addr:$sym)]>,
+                                    Requires<[IsNaCl, In64BitMode, IsNaClDontBreakABI]>;
+
 def NACL_CG_GD_TLS_addr64 : I<0, Pseudo, (outs), (ins i32mem:$sym), "",
                             [(X86tlsaddr tls32addr:$sym)]>,
-                            Requires<[IsNaCl, In64BitMode]>;
+                            Requires<[IsNaCl, In64BitMode, IsNotNaClDontBreakABI]>;
 def NACL_CG_LE_TLS_addr64 : I<0, Pseudo, (outs), (ins i32mem:$sym), "",
                             [(X86tlsaddr_le tls32addr:$sym)]>,
-                            Requires<[IsNaCl, In64BitMode]>;
+                            Requires<[IsNaCl, In64BitMode, IsNotNaClDontBreakABI]>;
 def NACL_CG_IE_TLS_addr64 : I<0, Pseudo, (outs), (ins i32mem:$sym), "",
                             [(X86tlsaddr_ie tls32addr:$sym)]>,
-                            Requires<[IsNaCl, In64BitMode]>;
+                            Requires<[IsNaCl, In64BitMode, IsNotNaClDontBreakABI]>;
 // For mtls-use-call.
 def NACL_CG_LE_TLS_addr32 : I<0, Pseudo, (outs), (ins i32mem:$sym), "",
                             [(X86tlsaddr_le tls32addr:$sym)]>,
