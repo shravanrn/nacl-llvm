@@ -628,7 +628,7 @@ bool X86NaClRewritePass::ApplyRewrites(MachineBasicBlock &MBB,
 
   // General Dynamic NaCl TLS model
   // http://code.google.com/p/nativeclient/issues/detail?id=1685
-  if (Opc == X86::NACL_CG_GD_TLS_addr64) {
+  if (Opc == X86::NACL_CG_GD_TLS_addr64 || Opc == X86::NACL_CG_GD_TLS_addr64_sameabi) {
 
     // Rewrite to:
     //   leaq $sym@TLSGD(%rip), %rdi
@@ -648,12 +648,13 @@ bool X86NaClRewritePass::ApplyRewrites(MachineBasicBlock &MBB,
 
   // Local Exec NaCl TLS Model
   if (Opc == X86::NACL_CG_LE_TLS_addr64 ||
-      Opc == X86::NACL_CG_LE_TLS_addr32) {
+      Opc == X86::NACL_CG_LE_TLS_addr32 ||
+      Opc == X86::NACL_CG_LE_TLS_addr64_sameabi) {
     unsigned CallOpc, LeaOpc, Reg;
     // Rewrite to:
     //   call __nacl_read_tp@PLT
     //   lea $sym@flag(,%reg), %reg
-    if (Opc == X86::NACL_CG_LE_TLS_addr64) {
+    if (Opc == X86::NACL_CG_LE_TLS_addr64 || Opc == X86::NACL_CG_LE_TLS_addr64_sameabi) {
       CallOpc = X86::NACL_CALL64d;
       LeaOpc = X86::LEA64r;
       Reg = X86::RAX;
@@ -677,12 +678,13 @@ bool X86NaClRewritePass::ApplyRewrites(MachineBasicBlock &MBB,
 
   // Initial Exec NaCl TLS Model
   if (Opc == X86::NACL_CG_IE_TLS_addr64 ||
-      Opc == X86::NACL_CG_IE_TLS_addr32) {
+      Opc == X86::NACL_CG_IE_TLS_addr32 ||
+      Opc == X86::NACL_CG_IE_TLS_addr64_sameabi) {
     unsigned CallOpc, AddOpc, Base, Reg;
     // Rewrite to:
     //   call __nacl_read_tp@PLT
     //   addq sym@flag(%base), %reg
-    if (Opc == X86::NACL_CG_IE_TLS_addr64) {
+    if (Opc == X86::NACL_CG_IE_TLS_addr64 || Opc == X86::NACL_CG_IE_TLS_addr64_sameabi) {
       CallOpc = X86::NACL_CALL64d;
       AddOpc = X86::ADD64rm;
       Base = X86::RIP;
