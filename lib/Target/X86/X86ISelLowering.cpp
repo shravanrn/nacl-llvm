@@ -11157,8 +11157,15 @@ LowerToTLSExecCall(GlobalAddressSDNode *GA, SelectionDAG &DAG,
     llvm_unreachable("Unknown TLS model");
   }
 
+  if(NaClDontBreakABI)
+  {
+    return GetTLSADDR(DAG, DAG.getEntryNode(), GA, NULL, PtrVT,
+                    is64Bit? X86::RAX : X86::EAX, // PtrVT is 32-bit.
+                    TargetFlag, false, Opcode);
+  }
+
   return GetTLSADDR(DAG, DAG.getEntryNode(), GA, NULL, PtrVT,
-                    X86::RAX, // PtrVT is 32-bit.
+                    X86::EAX, // PtrVT is 32-bit.
                     TargetFlag, false, Opcode);
 }
 
@@ -11179,9 +11186,16 @@ LowerToTLSNaCl64(GlobalAddressSDNode *GA, SelectionDAG &DAG,
     return LowerToTLSExecCall(GA, DAG, PtrVT, model, true);
   }
 
-  return GetTLSADDR(DAG, DAG.getEntryNode(), GA, NULL, PtrVT,
-                    X86::EAX, // PtrVT is 32-bit.
+  if(NaClDontBreakABI)
+  {
+    return GetTLSADDR(DAG, DAG.getEntryNode(), GA, NULL, PtrVT,
+                    X86::RAX, // PtrVT is 32-bit.
                     TargetFlag, false, Opcode);
+  }
+
+  return GetTLSADDR(DAG, DAG.getEntryNode(), GA, NULL, PtrVT,
+                X86::EAX, // PtrVT is 32-bit.
+                TargetFlag, false, Opcode);
 }
 // @LOCALMOD-END
 
