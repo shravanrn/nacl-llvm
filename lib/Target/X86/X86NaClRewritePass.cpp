@@ -115,6 +115,17 @@ static bool IsStore(MachineInstr &MI) {
 }
 
 static bool IsLoad(MachineInstr &MI) {
+  if(MI.getOpcode() == X86::JMP64m &&
+	  MI.getNumOperands() == 5 &&
+	  MI.getOperand(1).getImm() == 1 &&
+	  MI.getOperand(3).getImm()== 0
+  )
+  {
+	//JMP64m is a load followed by a jump
+	//the load address is just the address in register(op_2) * op_1 + op_3
+	//if op_1 == 1 and op_3 == 0, there is no real load
+	return false;
+  }
   return MI.mayLoad();
 }
 
@@ -430,6 +441,7 @@ bool X86NaClRewritePass::ApplyControlSFI(MachineBasicBlock &MBB,
 
   // Rewrite indirect jump/call instructions
   unsigned NewOpc = 0;
+  unsigned regNum = 0;
   switch (Opc) {
   // 32-bit
   case X86::JMP32r               : NewOpc = X86::NACL_JMP32r; break;
@@ -441,8 +453,23 @@ bool X86NaClRewritePass::ApplyControlSFI(MachineBasicBlock &MBB,
   case X86::TAILJMPr64           : NewOpc = X86::NACL_JMP64r; break;
   case X86::JMP64r				 : NewOpc = X86::NACL_JMP64r; break;
   }
+
+  //extra case that comes up when running NaCl x64 in LP64 machine mode (using 64 bit pointers)
+  if(Opc == X86::JMP64m)
+  {
+	  if(MI.getNumOperands() >= 3 && MI.getOperand(2).isReg())
+	  {
+		  NewOpc = X86::NACL_JMP64r;
+		  regNum = 2;
+	  }
+	  else
+	  {
+		  llvm_unreachable("Unhandled Control SFI");
+	  }
+  }
+
   if (NewOpc) {
-    unsigned TargetReg = MI.getOperand(0).getReg();
+    unsigned TargetReg = MI.getOperand(regNum).getReg();
     if (Is64Bit) {
       // CALL64r, etc. take a 64-bit register as a target. However, NaCl gas
       // expects naclcall/nacljmp pseudos to have 32-bit regs as targets
@@ -613,7 +640,7 @@ bool X86NaClRewritePass::ApplyRewrites(MachineBasicBlock &MBB,
   //In this case, the Inst Selection makes this a CALL64register instruction even though it has an immediate op
   //We need to fix this
   if(Opc == X86::CALL64r &&
-	  MI.getNumOperands() >= 0 &&
+	  MI.getNumOperands() >= 1 &&
 	  (MI.getOperand(0).isGlobal() || MI.getOperand(0).isSymbol())
   ){
 	NewOpc = X86::NACL_CALL64d;
