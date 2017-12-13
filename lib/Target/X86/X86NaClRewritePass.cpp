@@ -648,6 +648,32 @@ bool X86NaClRewritePass::ApplyRewrites(MachineBasicBlock &MBB,
 	MI.eraseFromParent();
 	return true;
   }
+  else if(Opc == X86::MOVDQAmr)
+  {
+	BuildMI(MBB, MBBI, DL, TII->get(X86::MOVDQUmr))
+	  .addOperand(MI.getOperand(0))
+	  .addOperand(MI.getOperand(1))
+	  .addOperand(MI.getOperand(2))
+	  .addOperand(MI.getOperand(3))
+	  .addOperand(MI.getOperand(4))
+	  .addOperand(MI.getOperand(5));
+
+	MI.eraseFromParent();
+	return true;
+  }
+  else if(Opc == X86::MOVDQArm)
+  {
+	BuildMI(MBB, MBBI, DL, TII->get(X86::MOVDQUrm))
+	  .addOperand(MI.getOperand(0))
+	  .addOperand(MI.getOperand(1))
+	  .addOperand(MI.getOperand(2))
+	  .addOperand(MI.getOperand(3))
+	  .addOperand(MI.getOperand(4))
+	  .addOperand(MI.getOperand(5));
+
+	MI.eraseFromParent();
+	return true;
+  }
 
   // These direct jumps need their opcode rewritten
   // and variable operands removed.
