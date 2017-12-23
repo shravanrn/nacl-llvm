@@ -65,6 +65,9 @@ namespace {
                   const MachineBasicBlock &MBB,
                   const MachineBasicBlock::iterator MBBI) const;
 
+    bool ApplyNaClDontBreakABIRewrites(MachineBasicBlock &MBB,
+                      MachineBasicBlock::iterator MBBI);
+
     bool ApplyRewrites(MachineBasicBlock &MBB,
                       MachineBasicBlock::iterator MBBI);
     bool ApplyStackSFI(MachineBasicBlock &MBB,
@@ -616,64 +619,77 @@ bool X86NaClRewritePass::ApplyMemorySFI(MachineBasicBlock &MBB,
   return Modified;
 }
 
-bool X86NaClRewritePass::ApplyRewrites(MachineBasicBlock &MBB,
-                                       MachineBasicBlock::iterator MBBI) {
+bool X86NaClRewritePass::ApplyNaClDontBreakABIRewrites(MachineBasicBlock &MBB,
+                      MachineBasicBlock::iterator MBBI)
+{
+  if(!NaClDontBreakABI)
+    return false;
+
   MachineInstr &MI = *MBBI;
   DebugLoc DL = MI.getDebugLoc();
   unsigned Opc = MI.getOpcode();
 
   if(Opc == X86::MOVAPSmr)
   {
-	BuildMI(MBB, MBBI, DL, TII->get(X86::MOVUPSmr))
-	  .addOperand(MI.getOperand(0))
-	  .addOperand(MI.getOperand(1))
-	  .addOperand(MI.getOperand(2))
-	  .addOperand(MI.getOperand(3))
-	  .addOperand(MI.getOperand(4))
-	  .addOperand(MI.getOperand(5));
+    BuildMI(MBB, MBBI, DL, TII->get(X86::MOVUPSmr))
+      .addOperand(MI.getOperand(0))
+      .addOperand(MI.getOperand(1))
+      .addOperand(MI.getOperand(2))
+      .addOperand(MI.getOperand(3))
+      .addOperand(MI.getOperand(4))
+      .addOperand(MI.getOperand(5));
 
-	MI.eraseFromParent();
-	return true;
+    MI.eraseFromParent();
+    return true;
   }
   else if(Opc == X86::MOVAPSrm)
   {
-	BuildMI(MBB, MBBI, DL, TII->get(X86::MOVUPSrm))
-	  .addOperand(MI.getOperand(0))
-	  .addOperand(MI.getOperand(1))
-	  .addOperand(MI.getOperand(2))
-	  .addOperand(MI.getOperand(3))
-	  .addOperand(MI.getOperand(4))
-	  .addOperand(MI.getOperand(5));
+    BuildMI(MBB, MBBI, DL, TII->get(X86::MOVUPSrm))
+      .addOperand(MI.getOperand(0))
+      .addOperand(MI.getOperand(1))
+      .addOperand(MI.getOperand(2))
+      .addOperand(MI.getOperand(3))
+      .addOperand(MI.getOperand(4))
+      .addOperand(MI.getOperand(5));
 
-	MI.eraseFromParent();
-	return true;
+    MI.eraseFromParent();
+    return true;
   }
   else if(Opc == X86::MOVDQAmr)
   {
-	BuildMI(MBB, MBBI, DL, TII->get(X86::MOVDQUmr))
-	  .addOperand(MI.getOperand(0))
-	  .addOperand(MI.getOperand(1))
-	  .addOperand(MI.getOperand(2))
-	  .addOperand(MI.getOperand(3))
-	  .addOperand(MI.getOperand(4))
-	  .addOperand(MI.getOperand(5));
+    BuildMI(MBB, MBBI, DL, TII->get(X86::MOVDQUmr))
+      .addOperand(MI.getOperand(0))
+      .addOperand(MI.getOperand(1))
+      .addOperand(MI.getOperand(2))
+      .addOperand(MI.getOperand(3))
+      .addOperand(MI.getOperand(4))
+      .addOperand(MI.getOperand(5));
 
-	MI.eraseFromParent();
-	return true;
+    MI.eraseFromParent();
+    return true;
   }
   else if(Opc == X86::MOVDQArm)
   {
-	BuildMI(MBB, MBBI, DL, TII->get(X86::MOVDQUrm))
-	  .addOperand(MI.getOperand(0))
-	  .addOperand(MI.getOperand(1))
-	  .addOperand(MI.getOperand(2))
-	  .addOperand(MI.getOperand(3))
-	  .addOperand(MI.getOperand(4))
-	  .addOperand(MI.getOperand(5));
+    BuildMI(MBB, MBBI, DL, TII->get(X86::MOVDQUrm))
+      .addOperand(MI.getOperand(0))
+      .addOperand(MI.getOperand(1))
+      .addOperand(MI.getOperand(2))
+      .addOperand(MI.getOperand(3))
+      .addOperand(MI.getOperand(4))
+      .addOperand(MI.getOperand(5));
 
-	MI.eraseFromParent();
-	return true;
+    MI.eraseFromParent();
+    return true;
   }
+
+  return false;
+}
+
+bool X86NaClRewritePass::ApplyRewrites(MachineBasicBlock &MBB,
+                                       MachineBasicBlock::iterator MBBI) {
+  MachineInstr &MI = *MBBI;
+  DebugLoc DL = MI.getDebugLoc();
+  unsigned Opc = MI.getOpcode();
 
   // These direct jumps need their opcode rewritten
   // and variable operands removed.
@@ -851,6 +867,10 @@ bool X86NaClRewritePass::runOnMachineBasicBlock(MachineBasicBlock &MBB) {
         (Is64Bit && ApplyMemorySFI(MBB, MBBI)) ||
         (Is64Bit && ApplyFrameSFI(MBB, MBBI)) ||
         ApplyControlSFI(MBB, MBBI)) {
+      Modified = true;
+    }
+
+    if(ApplyNaClDontBreakABIRewrites(MBB, MBBI)) {
       Modified = true;
     }
   }
