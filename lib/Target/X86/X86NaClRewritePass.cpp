@@ -118,17 +118,17 @@ static bool IsStore(MachineInstr &MI) {
 }
 
 static bool IsLoad(MachineInstr &MI) {
-  if(MI.getOpcode() == X86::JMP64m &&
-	  MI.getNumOperands() == 5 &&
-	  MI.getOperand(1).getImm() == 1 &&
-	  MI.getOperand(3).getImm()== 0
-  )
-  {
-	//JMP64m is a load followed by a jump
-	//the load address is just the address in register(op_2) * op_1 + op_3
-	//if op_1 == 1 and op_3 == 0, there is no real load
-	return false;
-  }
+//  if(MI.getOpcode() == X86::JMP64m &&
+//	  MI.getNumOperands() == 5 &&
+//	  MI.getOperand(1).getImm() == 1 &&
+//	  MI.getOperand(3).getImm()== 0
+//  )
+//  {
+//	//JMP64m is a load followed by a jump
+//	//the load address is just the address in register(op_2) * op_1 + op_3
+//	//if op_1 == 1 and op_3 == 0, there is no real load
+//	return false;
+//  }
   return MI.mayLoad();
 }
 
@@ -457,19 +457,19 @@ bool X86NaClRewritePass::ApplyControlSFI(MachineBasicBlock &MBB,
   case X86::JMP64r				 : NewOpc = X86::NACL_JMP64r; break;
   }
 
-  //extra case that comes up when running NaCl x64 in LP64 machine mode (using 64 bit pointers)
-  if(Opc == X86::JMP64m)
-  {
-	  if(MI.getNumOperands() >= 3 && MI.getOperand(2).isReg())
-	  {
-		  NewOpc = X86::NACL_JMP64r;
-		  regNum = 2;
-	  }
-	  else
-	  {
-		  llvm_unreachable("Unhandled Control SFI");
-	  }
-  }
+//  //extra case that comes up when running NaCl x64 in LP64 machine mode (using 64 bit pointers)
+//  if(Opc == X86::JMP64m)
+//  {
+//	  if(MI.getNumOperands() >= 3 && MI.getOperand(2).isReg())
+//	  {
+//		  NewOpc = X86::NACL_JMP64r;
+//		  regNum = 2;
+//	  }
+//	  else
+//	  {
+//		  llvm_unreachable("Unhandled Control SFI");
+//	  }
+//  }
 
   if (NewOpc) {
     unsigned TargetReg = MI.getOperand(regNum).getReg();
