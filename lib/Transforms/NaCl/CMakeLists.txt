@@ -3,6 +3,7 @@ add_llvm_library(LLVMNaClTransforms
   BackendCanonicalize.cpp
   CanonicalizeMemIntrinsics.cpp
   CleanupUsedGlobalsMetadata.cpp
+  ClearPtrToIntTop32.cpp
   ConstantInsertExtractElementIndex.cpp
   ConvertToPSO.cpp
   ExceptionInfoWriter.cpp

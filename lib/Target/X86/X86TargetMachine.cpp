@@ -22,6 +22,7 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/Transforms/NaCl.h"
 #include "llvm/NaClABI.h"
 using namespace llvm;
 
@@ -206,6 +207,9 @@ TargetPassConfig *X86TargetMachine::createPassConfig(PassManagerBase &PM) {
 
 void X86PassConfig::addIRPasses() {
   addPass(createAtomicExpandPass(&getX86TargetMachine()));
+  if (Triple(TM->getTargetTriple()).isOSNaCl() && Triple(TM->getTargetTriple()).isArch64Bit() && NaClDontBreakABI) {
+    addPass(createClearPtrToIntTop32Pass());
+  }
 
   TargetPassConfig::addIRPasses();
 }

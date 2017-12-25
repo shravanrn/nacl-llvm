@@ -304,6 +304,7 @@ void initializeAllocateDataSegmentPass(PassRegistry&);
 void initializeBackendCanonicalizePass(PassRegistry&);
 void initializeCanonicalizeMemIntrinsicsPass(PassRegistry&);
 void initializeCleanupUsedGlobalsMetadataPass(PassRegistry&);
+void initializeClearPtrToIntTop32Pass(PassRegistry&);
 void initializeConstantInsertExtractElementIndexPass(PassRegistry&);
 void initializeConvertToPSOPass(PassRegistry&);
 void initializeExpandAllocasPass(PassRegistry&);

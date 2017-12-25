@@ -33,6 +33,7 @@ BasicBlockPass *createFixVectorLoadStoreAlignmentPass();
 BasicBlockPass *createPromoteI1OpsPass();
 BasicBlockPass *createSimplifyAllocasPass();
 FunctionPass *createBackendCanonicalizePass();
+FunctionPass *createClearPtrToIntTop32Pass();
 FunctionPass *createExpandConstantExprPass();
 FunctionPass *createExpandLargeIntegersPass();
 FunctionPass *createExpandStructRegsPass();

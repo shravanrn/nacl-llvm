@@ -397,6 +397,7 @@ int main(int argc, char **argv) {
   initializeBackendCanonicalizePass(Registry);
   initializeCanonicalizeMemIntrinsicsPass(Registry);
   initializeCleanupUsedGlobalsMetadataPass(Registry);
+  initializeClearPtrToIntTop32Pass(Registry);
   initializeConstantInsertExtractElementIndexPass(Registry);
   initializeConvertToPSOPass(Registry);
   initializeExpandAllocasPass(Registry);
