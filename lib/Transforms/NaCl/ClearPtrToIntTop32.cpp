@@ -44,13 +44,14 @@ namespace {
       virtual bool runOnFunction(Function &F);
       bool visitInstruction(Instruction &I) { return false; }
       bool visitPtrToIntInst(PtrToIntInst &I);
+      bool visitICmpInst(ICmpInst &I);
 
   };
 }
 
 char ClearPtrToIntTop32::ID = 0;
 INITIALIZE_PASS(ClearPtrToIntTop32, "clear-ptr-to-int-top32",
-                "Convert pointer values to integer values",
+                "Clear top bits for ptr to int comparisions and ptr to ptr comparisons",
                 false, false)
 
 bool ClearPtrToIntTop32::runOnFunction(Function &F) {
@@ -73,6 +74,28 @@ bool ClearPtrToIntTop32::visitPtrToIntInst(PtrToIntInst &I) {
     Instruction *maskInst = BinaryOperator::CreateAnd(newPtrToInt, ConstantInt::get(I64, 0xffffffff), "ptr.clr", &I);
 
     I.replaceAllUsesWith(maskInst);
+    return true;
+  }
+
+  return false;
+}
+
+bool ClearPtrToIntTop32::visitICmpInst(ICmpInst &I) {
+  Value* op0 = I.getOperand(0);
+  Value* op1 = I.getOperand(1);
+
+  if (op0->getType()->isPointerTy() && op1->getType()->isPointerTy())
+  {
+    auto I64 = Type::getInt64Ty(I.getContext());
+    Instruction *op0Int = new PtrToIntInst(op0, I64, "op.clr", &I);
+    Instruction *op1Int = new PtrToIntInst(op1, I64, "op.clr", &I);
+
+    Instruction *maskInst0 = BinaryOperator::CreateAnd(op0Int, ConstantInt::get(I64, 0xffffffff), "ptr.clr", &I);
+    Instruction *maskInst1 = BinaryOperator::CreateAnd(op1Int, ConstantInt::get(I64, 0xffffffff), "ptr.clr", &I);
+
+    auto newInst = CmpInst::Create(Instruction::ICmp, I.getPredicate(), maskInst0, maskInst1, I.getName(), &I);
+    I.replaceAllUsesWith(newInst);
+
     return true;
   }
 
