@@ -8496,8 +8496,9 @@ else
 echo "$as_me: WARNING: specified python ($PYTHON) is not usable, searching path" >&2;}
   fi
 
-  # Extract the first word of "python python2 python27", so it can be a program name with args.
-set dummy python python2 python27; ac_word=$2
+
+  # Extract the first word of "python3 python2 python27", so it can be a program name with args.
+set dummy python3 python2 python27; ac_word=$2
 { echo "$as_me:$LINENO: checking for $ac_word" >&5
 echo $ECHO_N "checking for $ac_word... $ECHO_C" >&6; }
 if test "${ac_cv_path_PYTHON+set}" = set; then

@@ -128,9 +128,6 @@ cross-compile-build-tools:
 	  unset SDKROOT ; \
 	  unset UNIVERSAL_SDK_PATH ; \
 	  configure_opts= ; \
-	  if test "$(ENABLE_LIBCPP)" -ne 0 ; then \
-	    configure_opts="$$configure_opts --enable-libcpp"; \
-	  fi; \
 	  $(PROJ_SRC_DIR)/configure --build=$(BUILD_TRIPLE) \
 		--host=$(BUILD_TRIPLE) --target=$(BUILD_TRIPLE) \
 	        --disable-polly $$configure_opts; \
@@ -150,7 +147,6 @@ cross-compile-build-tools:
 	  ENABLE_COVERAGE=$(ENABLE_COVERAGE) \
 	  DISABLE_ASSERTIONS=$(DISABLE_ASSERTIONS) \
 	  ENABLE_EXPENSIVE_CHECKS=$(ENABLE_EXPENSIVE_CHECKS) \
-	  ENABLE_LIBCPP=$(ENABLE_LIBCPP) \
 	  CC=$(BUILD_CC) \
 	  CXX=$(BUILD_CXX) \
 	  CFLAGS="$(BUILD_CFLAGS)" \

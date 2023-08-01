@@ -838,7 +838,7 @@ ObjectDirs := $(SourceDirs:%=$(ObjDir)/%)
 #----------------------------------------------------------
 
 ifeq (-mingw32,$(findstring -mingw32,$(BUILD_TRIPLE)))
-  ECHOPATH := $(Verb)$(PYTHON) -u -c "import sys;print ' '.join(sys.argv[1:])"
+  ECHOPATH := $(Verb)$(PYTHON) -u -c "import sys;print(' '.join(sys.argv[1:]))"
 else
   ECHOPATH := $(Verb)$(ECHO)
 endif
